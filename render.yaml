@@ -1,0 +1,18 @@
+services:
+  - type: worker
+    name: whatsapp-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OWNER_NUMBER
+        sync: false
+      - key: BOT_NAME
+        value: BotKu
+      - key: BOT_PREFIX
+        value: "!"
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
