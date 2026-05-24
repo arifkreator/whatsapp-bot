@@ -1,10 +1,11 @@
 FROM node:20-slim
 
-# Install dependencies minimal untuk Baileys
+# Install dependencies untuk Baileys
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
+    git \
     ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
