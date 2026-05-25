@@ -1,4 +1,4 @@
-import config from '../config.js';
+import config, { isOwnerNumber } from '../config.js';
 import { muteUser, unmuteUser, resetUserSpam, getSpamStats, isUserMuted } from '../services/spamDetector.js';
 import { resetConversation, getActiveConversations, getQuotaStatus } from '../services/groqAI.js';
 import { getAllSessions, getSessionCount, stopSession } from '../services/sessionManager.js';

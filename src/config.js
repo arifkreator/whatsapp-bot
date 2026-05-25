@@ -5,15 +5,25 @@ export const config = {
   // Bot identity
   botName: process.env.BOT_NAME || 'BotKu',
   prefix: process.env.BOT_PREFIX || '!',
-  ownerNumber: process.env.OWNER_NUMBER || '',
+  botId: process.env.BOT_ID || 'bot-default',
+
+  // Bot Manager
+  managerUrl: process.env.MANAGER_URL || '',
+  managerSecret: process.env.MANAGER_SECRET || 'ganti-dengan-rahasia-kuat',
+
+  // =============================================
+  // OWNER — nomor khusus kamu sebagai pemilik platform
+  // Format: 628xxx (tanpa + atau spasi)
+  // Bisa isi lebih dari 1 nomor, pisahkan dengan koma
+  // Contoh: 628111,628222
+  // =============================================
+  ownerNumbers: (process.env.OWNER_NUMBERS || process.env.OWNER_NUMBER || '')
+    .split(',')
+    .map(n => n.trim())
+    .filter(Boolean),
 
   // Groq AI
   groqApiKey: process.env.GROQ_API_KEY || '',
-  // Model gratis terbaik di Groq (pilih salah satu di .env):
-  //   llama-3.3-70b-versatile  ← paling pintar, recommended
-  //   llama3-8b-8192           ← paling cepat & ringan
-  //   gemma2-9b-it             ← alternatif Google model
-  //   mixtral-8x7b-32768       ← konteks panjang
   groqModel: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
   aiMaxTokens: parseInt(process.env.AI_MAX_TOKENS) || 1024,
   aiSystemPrompt: process.env.AI_SYSTEM_PROMPT ||
@@ -31,11 +41,20 @@ export const config = {
   sessionPath: process.env.SESSION_PATH || './sessions',
 };
 
+// Helper: cek apakah nomor adalah owner
+export function isOwnerNumber(number) {
+  const clean = number?.replace(/[^0-9]/g, '');
+  return config.ownerNumbers.some(o => o.replace(/[^0-9]/g, '') === clean);
+}
+
+// Validasi
 if (!config.groqApiKey && !process.env.GROQ_API_KEY_1) {
   console.warn('⚠️  GROQ_API_KEY belum diset! Fitur AI tidak akan berfungsi.');
 }
-if (!config.ownerNumber) {
-  console.warn('⚠️  OWNER_NUMBER belum diset! Fitur admin terbatas.');
+if (config.ownerNumbers.length === 0) {
+  console.warn('⚠️  OWNER_NUMBERS belum diset! Fitur owner tidak aktif.');
+} else {
+  console.info(`👑 Owner terdaftar: ${config.ownerNumbers.join(', ')}`);
 }
 
 export default config;

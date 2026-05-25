@@ -8,10 +8,13 @@ import {
 import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import { handleMessages } from './handlers/messageHandler.js';
+import { handleManagerRequest } from './handlers/managerHandler.js';
 import logger from './utils/logger.js';
 import config from './config.js';
 import { promises as fs } from 'fs';
 import http from 'http';
+import { isOwnerNumber } from './config.js';
+import fetch from 'node-fetch';
 
 // =============================================
 // QR CODE WEB SERVER
@@ -19,7 +22,33 @@ import http from 'http';
 // =============================================
 let currentQR = null;
 
-const qrServer = http.createServer((req, res) => {
+let sockRef = null; // referensi socket untuk manager handler
+
+const qrServer = http.createServer(async (req, res) => {
+  // ── Manager endpoint ─────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/manager') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        req.body = JSON.parse(body);
+        await handleManagerRequest(req, res, sockRef);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+
+  // ── Health check ─────────────────────────────────────────────────
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', botId: config.botId }));
+    return;
+  }
+
+  // ── QR Code page ─────────────────────────────────────────────────
   if (req.url === '/qr') {
     if (!currentQR) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -31,7 +60,6 @@ const qrServer = http.createServer((req, res) => {
       `);
       return;
     }
-    // Tampilkan QR sebagai gambar via Google Charts API
     const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(currentQR)}`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`
@@ -47,6 +75,7 @@ const qrServer = http.createServer((req, res) => {
     `);
     return;
   }
+
   // Root redirect ke /qr
   res.writeHead(302, { Location: '/qr' });
   res.end();
@@ -92,6 +121,9 @@ async function startBot() {
     markOnlineOnConnect: true,
     generateHighQualityLinkPreview: false,
   });
+
+  // Simpan referensi socket untuk manager handler
+  sockRef = sock;
 
   // =============================================
   // EVENT HANDLERS
