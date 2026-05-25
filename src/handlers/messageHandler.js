@@ -1,4 +1,4 @@
-import config from '../config.js';
+import config, { isOwnerNumber } from '../config.js';
 import { checkSpam, resetUserSpam } from '../services/spamDetector.js';
 import { askGroq } from '../services/groqAI.js';
 import { handleCommand } from './commandHandler.js';
@@ -8,6 +8,9 @@ import logger from '../utils/logger.js';
 // Set untuk track message ID yang sudah diproses (anti-duplikat)
 const processedMsgIds = new Set();
 setInterval(() => processedMsgIds.clear(), 10 * 60 * 1000);
+
+// Set untuk track user yang sudah dapat hint /start (agar tidak spam)
+const hintedUsers = new Set();
 
 export async function handleMessages(sock, { messages }) {
   for (const msg of messages) {
@@ -59,7 +62,7 @@ async function processMessage(sock, msg) {
   if (!body || body.trim().length === 0) return;
 
   const senderId = senderNumber || senderJid?.split('@')[0] || '';
-  const isOwner = senderId === config.ownerNumber;
+  const isOwner = isOwnerNumber(senderId);
 
   logger.info(`📨 [${isGroup ? 'GROUP' : 'PRIVATE'}] ${senderId}: "${body.substring(0, 80)}"`);
 
@@ -105,17 +108,22 @@ async function processMessage(sock, msg) {
   // ── SESSION CHECK (hanya untuk private chat) ──────────────────────
   // Owner selalu bisa chat tanpa /start
   // Grup tidak butuh /start — bot selalu aktif untuk kontrol grup
-  if (!isGroup && !isOwner && !hasSession(senderId)) {
-    // User belum /start — kirim petunjuk HANYA untuk pesan pertama
-    // Tandai sudah pernah dikirimi petunjuk agar tidak spam
-    const hintKey = `hint_${senderId}`;
-    if (!processedMsgIds.has(hintKey)) {
-      processedMsgIds.add(hintKey);
-      await sock.sendMessage(jid, {
-        text: `👋 Halo! Untuk mulai menggunakan bot, ketik:\n\n*/start*`,
-      }, { quoted: msg });
+  if (!isGroup && !isOwner) {
+    if (!hasSession(senderId)) {
+      // User belum /start atau sudah /stop
+      // Kirim petunjuk sekali saja pakai NodeCache di sessionManager
+      const alreadyHinted = hintedUsers.has(senderId);
+      if (!alreadyHinted) {
+        hintedUsers.add(senderId);
+        // Hapus hint setelah 1 jam agar bisa kirim lagi kalau balik
+        setTimeout(() => hintedUsers.delete(senderId), 60 * 60 * 1000);
+        await sock.sendMessage(jid, {
+          text: `👋 Halo! Untuk mulai menggunakan bot, ketik:\n\n*/start*`,
+        }, { quoted: msg });
+      }
+      // STOP DI SINI — jangan proses apapun lagi
+      return;
     }
-    return;
   }
 
   // ── ANTI-SPAM (khusus grup) ────────────────────────────────────────
