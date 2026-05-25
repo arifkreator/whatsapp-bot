@@ -11,6 +11,51 @@ import { handleMessages } from './handlers/messageHandler.js';
 import logger from './utils/logger.js';
 import config from './config.js';
 import { promises as fs } from 'fs';
+import http from 'http';
+
+// =============================================
+// QR CODE WEB SERVER
+// Tampilkan QR sebagai halaman web agar mudah di-scan
+// =============================================
+let currentQR = null;
+
+const qrServer = http.createServer((req, res) => {
+  if (req.url === '/qr') {
+    if (!currentQR) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`
+        <html><body style="font-family:sans-serif;text-align:center;padding:40px;background:#f0f0f0">
+          <h2>✅ Bot sudah terhubung!</h2>
+          <p>Tidak perlu scan QR lagi.</p>
+        </body></html>
+      `);
+      return;
+    }
+    // Tampilkan QR sebagai gambar via Google Charts API
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(currentQR)}`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`
+      <html><head>
+        <meta http-equiv="refresh" content="30">
+        <style>body{font-family:sans-serif;text-align:center;padding:40px;background:#f0f0f0}</style>
+      </head><body>
+        <h2>📱 Scan QR Code WhatsApp</h2>
+        <p>Buka WhatsApp → <b>Perangkat Tertaut</b> → <b>Tautkan Perangkat</b></p>
+        <img src="${qrUrl}" style="border:8px solid white;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)" />
+        <p style="color:#888;font-size:13px">Halaman otomatis refresh tiap 30 detik. QR expired dalam ~60 detik.</p>
+      </body></html>
+    `);
+    return;
+  }
+  // Root redirect ke /qr
+  res.writeHead(302, { Location: '/qr' });
+  res.end();
+});
+
+const PORT = process.env.PORT || 3000;
+qrServer.listen(PORT, () => {
+  logger.info(`🌐 QR Server jalan di port ${PORT} — buka /qr untuk scan`);
+});
 
 // =============================================
 // INISIALISASI BOT
@@ -57,13 +102,18 @@ async function startBot() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      logger.info('📱 Scan QR code ini untuk login WhatsApp:');
-      console.log('\n');
+      currentQR = qr;
+      // Tetap tampilkan di terminal (kecil)
       qrcode.generate(qr, { small: true });
-      console.log('\n💡 Buka WhatsApp > Perangkat Tertaut > Tautkan Perangkat\n');
+      logger.info('─'.repeat(50));
+      logger.info('📱 QR CODE TERSEDIA — Buka URL ini di browser:');
+      logger.info(`🔗 https://<railway-domain>/qr`);
+      logger.info('💡 Atau cek tab "Settings > Domains" di Railway untuk URL kamu');
+      logger.info('─'.repeat(50));
     }
 
     if (connection === 'open') {
+      currentQR = null; // Reset QR setelah login
       reconnectAttempts = 0;
       logger.info(`✅ ${config.botName} berhasil terhubung sebagai ${sock.user?.id?.split(':')[0]}`);
       logger.info(`🤖 AI: Groq (${config.groqModel}) — FREE tier`);
