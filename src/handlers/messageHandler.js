@@ -113,16 +113,17 @@ async function processMessage(sock, msg) {
   }
 
   // ── OWNER — forward semua pesan ke Bot Manager ────────────────────
-  // Owner tidak perlu /start, langsung proses
-  // Pesan dengan prefix ! di-forward ke Bot Manager dulu
   if (isOwner && !isGroup) {
     if (body.startsWith(config.prefix) && config.managerUrl) {
+      logger.info(`🔀 Forward ke Manager: ${config.managerUrl} | cmd: ${body}`);
       const reply = await forwardToManager(body, senderId);
       if (reply) {
         await sock.sendMessage(jid, { text: reply }, { quoted: msg });
         return;
       }
-      // Kalau Manager tidak ada/error, tetap proses lokal di bawah
+      logger.warn(`⚠️ Manager tidak merespon, fallback ke lokal`);
+    } else if (body.startsWith(config.prefix) && !config.managerUrl) {
+      logger.warn(`⚠️ MANAGER_URL kosong! Proses lokal.`);
     }
 
     // Owner bisa langsung pakai command lokal tanpa Manager
