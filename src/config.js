@@ -4,6 +4,26 @@ dotenv.config();
 
 const logger = pino({ level: 'info' });
 
+// =============================================
+// OWNER IDs — gabungkan semua format dalam 1 list
+// Isi OWNER_IDS di Railway dengan semua ID yang valid:
+// nomor HP (628xxx) DAN LID (119xxx) sekaligus
+// Contoh: 6285746686316,119228459937962
+// =============================================
+const rawOwnerIds = (
+  process.env.OWNER_IDS ||           // variable baru (recommended)
+  process.env.OWNER_NUMBERS ||       // backward compat
+  process.env.OWNER_NUMBER ||        // backward compat
+  ''
+).split(',').map(n => n.trim().replace(/[^0-9]/g, '')).filter(Boolean);
+
+// Gabungkan dengan OWNER_LIDS jika ada
+const rawOwnerLids = (process.env.OWNER_LIDS || '')
+  .split(',').map(n => n.trim().replace(/[^0-9]/g, '')).filter(Boolean);
+
+// Gabung semua jadi 1 Set untuk lookup O(1)
+const OWNER_ID_SET = new Set([...rawOwnerIds, ...rawOwnerLids]);
+
 export const config = {
   // Bot identity
   botName: process.env.BOT_NAME || 'BotKu',
@@ -14,16 +34,8 @@ export const config = {
   managerUrl: process.env.MANAGER_URL || '',
   managerSecret: process.env.MANAGER_SECRET || 'ganti-dengan-rahasia-kuat',
 
-  // =============================================
-  // OWNER — nomor khusus kamu sebagai pemilik platform
-  // Format: 628xxx (tanpa + atau spasi)
-  // Bisa isi lebih dari 1 nomor, pisahkan dengan koma
-  // Contoh: 628111,628222
-  // =============================================
-  ownerNumbers: (process.env.OWNER_NUMBERS || process.env.OWNER_NUMBER || '')
-    .split(',')
-    .map(n => n.trim())
-    .filter(Boolean),
+  // Owner (untuk backward compat)
+  ownerNumbers: rawOwnerIds,
 
   // Groq AI
   groqApiKey: process.env.GROQ_API_KEY || '',
@@ -44,56 +56,28 @@ export const config = {
   sessionPath: process.env.SESSION_PATH || './sessions',
 };
 
-// Cache LID mapping — { lid: phoneNumber }
-// Diisi saat bot menerima pesan pertama dari owner
-const lidToPhone = new Map();
-
-/**
- * Daftarkan mapping LID → nomor HP
- * Dipanggil dari messageHandler saat menerima pesan
- */
-export function registerLid(lid, phoneNumber) {
-  if (lid && phoneNumber && !lidToPhone.has(lid)) {
-    lidToPhone.set(lid, phoneNumber);
-    logger.info(`🔗 LID mapped: ${lid} → ${phoneNumber}`);
-  }
-}
-
 /**
  * Cek apakah nomor/LID adalah owner
+ * Sangat simpel — hanya lookup di Set
  */
 export function isOwnerNumber(number) {
   if (!number) return false;
   const clean = number.replace(/[^0-9]/g, '');
-
-  // 1. Cek langsung via nomor HP (format 628xxx)
-  const directMatch = config.ownerNumbers.some(
-    o => o.replace(/[^0-9]/g, '') === clean
-  );
-  if (directMatch) return true;
-
-  // 2. Cek via LID mapping
-  const mappedPhone = lidToPhone.get(clean);
-  if (mappedPhone) {
-    return config.ownerNumbers.some(
-      o => o.replace(/[^0-9]/g, '') === mappedPhone.replace(/[^0-9]/g, '')
-    );
-  }
-
-  // 3. Cek OWNER_LIDS di env (untuk akun multi-device/LID)
-  const ownerLids = (process.env.OWNER_LIDS || '')
-    .split(',').map(l => l.trim()).filter(Boolean);
-  return ownerLids.includes(clean);
+  const result = OWNER_ID_SET.has(clean);
+  return result;
 }
 
-// Validasi
-if (!config.groqApiKey && !process.env.GROQ_API_KEY_1) {
-  console.warn('⚠️  GROQ_API_KEY belum diset! Fitur AI tidak akan berfungsi.');
+// Dummy untuk backward compat (tidak dipakai lagi)
+export function registerLid() {}
+
+// Log saat startup
+logger.info(`👑 Owner IDs terdaftar: ${[...OWNER_ID_SET].join(', ') || 'KOSONG!'}`);
+
+if (!config.groqApiKey) {
+  logger.warn('⚠️  GROQ_API_KEY belum diset!');
 }
-if (config.ownerNumbers.length === 0) {
-  console.warn('⚠️  OWNER_NUMBERS belum diset! Fitur owner tidak aktif.');
-} else {
-  console.info(`👑 Owner terdaftar: ${config.ownerNumbers.join(', ')}`);
+if (OWNER_ID_SET.size === 0) {
+  logger.warn('⚠️  Tidak ada Owner ID terdaftar! Set OWNER_IDS di Railway.');
 }
 
 export default config;
