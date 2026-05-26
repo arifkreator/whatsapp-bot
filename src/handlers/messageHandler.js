@@ -1,4 +1,4 @@
-import config, { isOwnerNumber } from '../config.js';
+import config, { isOwnerNumber, registerLid } from '../config.js';
 import { checkSpam } from '../services/spamDetector.js';
 import { askGroq } from '../services/groqAI.js';
 import { handleCommand } from './commandHandler.js';
@@ -64,6 +64,15 @@ async function processMessage(sock, msg) {
 
   const senderId = senderNumber || senderJid?.split('@')[0] || '';
   const isOwner = isOwnerNumber(senderId);
+
+  // Registrasi LID mapping jika ada info nomor HP dari pesan
+  // Baileys kadang menyertakan nomor HP asli di pushName atau verifiedBizName
+  const pushName = msg.pushName;
+  if (senderId && msg.key.remoteJid?.includes('@lid')) {
+    // Coba ambil nomor dari JID alternatif jika tersedia
+    const phone = senderJid?.replace('@s.whatsapp.net', '')?.replace('@lid', '');
+    registerLid(senderId, phone);
+  }
 
   logger.info(`📨 [${isGroup ? 'GROUP' : 'PRIVATE'}] ${senderId}: "${body.substring(0, 80)}"`);
 

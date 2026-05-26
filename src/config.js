@@ -1,5 +1,8 @@
 import dotenv from 'dotenv';
+import pino from 'pino';
 dotenv.config();
+
+const logger = pino({ level: 'info' });
 
 export const config = {
   // Bot identity
@@ -41,10 +44,46 @@ export const config = {
   sessionPath: process.env.SESSION_PATH || './sessions',
 };
 
-// Helper: cek apakah nomor adalah owner
+// Cache LID mapping — { lid: phoneNumber }
+// Diisi saat bot menerima pesan pertama dari owner
+const lidToPhone = new Map();
+
+/**
+ * Daftarkan mapping LID → nomor HP
+ * Dipanggil dari messageHandler saat menerima pesan
+ */
+export function registerLid(lid, phoneNumber) {
+  if (lid && phoneNumber && !lidToPhone.has(lid)) {
+    lidToPhone.set(lid, phoneNumber);
+    logger.info(`🔗 LID mapped: ${lid} → ${phoneNumber}`);
+  }
+}
+
+/**
+ * Cek apakah nomor/LID adalah owner
+ */
 export function isOwnerNumber(number) {
-  const clean = number?.replace(/[^0-9]/g, '');
-  return config.ownerNumbers.some(o => o.replace(/[^0-9]/g, '') === clean);
+  if (!number) return false;
+  const clean = number.replace(/[^0-9]/g, '');
+
+  // 1. Cek langsung via nomor HP (format 628xxx)
+  const directMatch = config.ownerNumbers.some(
+    o => o.replace(/[^0-9]/g, '') === clean
+  );
+  if (directMatch) return true;
+
+  // 2. Cek via LID mapping (format 119xxxxxxxxx)
+  const mappedPhone = lidToPhone.get(clean);
+  if (mappedPhone) {
+    return config.ownerNumbers.some(
+      o => o.replace(/[^0-9]/g, '') === mappedPhone.replace(/[^0-9]/g, '')
+    );
+  }
+
+  // 3. Cek OWNER_LID langsung di env (solusi manual)
+  const ownerLids = (process.env.OWNER_LIDS || '')
+    .split(',').map(l => l.trim()).filter(Boolean);
+  return ownerLids.includes(clean);
 }
 
 // Validasi
