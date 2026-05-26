@@ -1,9 +1,10 @@
 import config, { isOwnerNumber } from '../config.js';
-import { checkSpam, resetUserSpam } from '../services/spamDetector.js';
+import { checkSpam } from '../services/spamDetector.js';
 import { askGroq } from '../services/groqAI.js';
 import { handleCommand } from './commandHandler.js';
 import { hasSession, startSession, stopSession } from '../services/sessionManager.js';
 import logger from '../utils/logger.js';
+import fetch from 'node-fetch';
 
 // Set untuk track message ID yang sudah diproses (anti-duplikat)
 const processedMsgIds = new Set();
@@ -66,17 +67,14 @@ async function processMessage(sock, msg) {
 
   logger.info(`📨 [${isGroup ? 'GROUP' : 'PRIVATE'}] ${senderId}: "${body.substring(0, 80)}"`);
 
-  // ── HANDLE /start dan /stop (prioritas tertinggi, sebelum session check)
+  // ── HANDLE /start dan /stop ────────────────────────────────────────
   const bodyLower = body.trim().toLowerCase();
 
   if (bodyLower === '/start') {
-    if (isGroup) {
-      // Di grup, /start tidak diperlukan — bot selalu aktif untuk kontrol grup
-      return;
-    }
+    if (isGroup) return;
     if (hasSession(senderId)) {
       await sock.sendMessage(jid, {
-        text: `✅ Bot sudah aktif untuk kamu!\nKetik */stop* untuk menghentikan.`,
+        text: `✅ Bot sudah aktif!\nKetik */stop* untuk menghentikan.`,
       }, { quoted: msg });
     } else {
       startSession(senderId);
@@ -91,7 +89,7 @@ async function processMessage(sock, msg) {
   }
 
   if (bodyLower === '/stop') {
-    if (isGroup) return; // /stop tidak berlaku di grup
+    if (isGroup) return;
     if (!hasSession(senderId) && !isOwner) {
       await sock.sendMessage(jid, {
         text: `ℹ️ Bot memang belum aktif. Ketik */start* untuk mengaktifkan.`,
@@ -99,30 +97,52 @@ async function processMessage(sock, msg) {
     } else {
       stopSession(senderId);
       await sock.sendMessage(jid, {
-        text: `🛑 *Bot dinonaktifkan.*\n\nAku tidak akan membalas pesanmu lagi.\nKetik */start* kapanpun untuk mengaktifkan kembali.`,
+        text: `🛑 *Bot dinonaktifkan.*\n\nKetik */start* kapanpun untuk mengaktifkan kembali.`,
       }, { quoted: msg });
     }
     return;
   }
 
-  // ── SESSION CHECK (hanya untuk private chat) ──────────────────────
-  // Owner selalu bisa chat tanpa /start
-  // Grup tidak butuh /start — bot selalu aktif untuk kontrol grup
+  // ── OWNER — forward semua pesan ke Bot Manager ────────────────────
+  // Owner tidak perlu /start, langsung proses
+  // Pesan dengan prefix ! di-forward ke Bot Manager dulu
+  if (isOwner && !isGroup) {
+    if (body.startsWith(config.prefix) && config.managerUrl) {
+      const reply = await forwardToManager(body, senderId);
+      if (reply) {
+        await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+        return;
+      }
+      // Kalau Manager tidak ada/error, tetap proses lokal di bawah
+    }
+
+    // Owner bisa langsung pakai command lokal tanpa Manager
+    if (body.startsWith(config.prefix)) {
+      const [cmd, ...args] = body.slice(config.prefix.length).trim().split(/\s+/);
+      await handleCommand(sock, msg, cmd, args, false, false, true);
+      return;
+    }
+
+    // Owner chat biasa → AI reply
+    await sock.sendPresenceUpdate('composing', jid);
+    const reply = await askGroq(senderJid, body, { senderName: senderId });
+    await sock.sendPresenceUpdate('paused', jid);
+    await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+    return;
+  }
+
+  // ── SESSION CHECK (user biasa, private chat) ──────────────────────
   if (!isGroup && !isOwner) {
     if (!hasSession(senderId)) {
-      // User belum /start atau sudah /stop
-      // Kirim petunjuk sekali saja pakai NodeCache di sessionManager
       const alreadyHinted = hintedUsers.has(senderId);
       if (!alreadyHinted) {
         hintedUsers.add(senderId);
-        // Hapus hint setelah 1 jam agar bisa kirim lagi kalau balik
         setTimeout(() => hintedUsers.delete(senderId), 60 * 60 * 1000);
         await sock.sendMessage(jid, {
           text: `👋 Halo! Untuk mulai menggunakan bot, ketik:\n\n*/start*`,
         }, { quoted: msg });
       }
-      // STOP DI SINI — jangan proses apapun lagi
-      return;
+      return; // STOP — jangan proses apapun
     }
   }
 
@@ -136,7 +156,7 @@ async function processMessage(sock, msg) {
     }
   }
 
-  // ── COMMAND HANDLER ───────────────────────────────────────────────
+  // ── COMMAND HANDLER (user biasa / grup) ───────────────────────────
   if (body.startsWith(config.prefix)) {
     const [cmd, ...args] = body.slice(config.prefix.length).trim().split(/\s+/);
     const groupMetadata = isGroup ? await sock.groupMetadata(jid).catch(() => null) : null;
@@ -150,17 +170,44 @@ async function processMessage(sock, msg) {
 
   if (shouldReplyWithAI) {
     await sock.sendPresenceUpdate('composing', jid);
-
     const groupMetadata = isGroup ? await sock.groupMetadata(jid).catch(() => null) : null;
     const context = {
       groupName: groupMetadata?.subject,
       senderName: senderId,
     };
-
     const reply = await askGroq(senderJid, body, context);
-
     await sock.sendPresenceUpdate('paused', jid);
     await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+  }
+}
+
+// ── FORWARD KE BOT MANAGER ────────────────────────────────────────────
+async function forwardToManager(message, senderNumber) {
+  try {
+    const response = await fetch(`${config.managerUrl}/webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret: config.managerSecret,
+        senderNumber,
+        message,
+        botId: config.botId,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      logger.error(`❌ Manager webhook error: HTTP ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    logger.info(`✅ Manager reply: ${data.reply?.substring(0, 50)}`);
+    return data.reply || null;
+
+  } catch (error) {
+    logger.error(`❌ Gagal forward ke Manager: ${error.message}`);
+    return null;
   }
 }
 
