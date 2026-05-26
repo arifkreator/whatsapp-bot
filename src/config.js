@@ -66,24 +66,47 @@ export function isOwnerNumber(number) {
   if (!number) return false;
   const clean = number.replace(/[^0-9]/g, '');
 
+  // DEBUG LOG — hapus setelah owner terdeteksi
+  const ownerLids = (process.env.OWNER_LIDS || '')
+    .split(',').map(l => l.trim()).filter(Boolean);
+  console.log(`🔍 DEBUG isOwner check:
+    input        : "${number}"
+    clean        : "${clean}"
+    ownerNumbers : ${JSON.stringify(config.ownerNumbers)}
+    ownerLids    : ${JSON.stringify(ownerLids)}
+    lidCache     : ${JSON.stringify([...lidToPhone.entries()])}
+  `);
+
   // 1. Cek langsung via nomor HP (format 628xxx)
   const directMatch = config.ownerNumbers.some(
     o => o.replace(/[^0-9]/g, '') === clean
   );
-  if (directMatch) return true;
-
-  // 2. Cek via LID mapping (format 119xxxxxxxxx)
-  const mappedPhone = lidToPhone.get(clean);
-  if (mappedPhone) {
-    return config.ownerNumbers.some(
-      o => o.replace(/[^0-9]/g, '') === mappedPhone.replace(/[^0-9]/g, '')
-    );
+  if (directMatch) {
+    console.log(`✅ DEBUG: MATCH via nomor HP`);
+    return true;
   }
 
-  // 3. Cek OWNER_LID langsung di env (solusi manual)
-  const ownerLids = (process.env.OWNER_LIDS || '')
-    .split(',').map(l => l.trim()).filter(Boolean);
-  return ownerLids.includes(clean);
+  // 2. Cek via LID mapping
+  const mappedPhone = lidToPhone.get(clean);
+  if (mappedPhone) {
+    const lidMatch = config.ownerNumbers.some(
+      o => o.replace(/[^0-9]/g, '') === mappedPhone.replace(/[^0-9]/g, '')
+    );
+    if (lidMatch) {
+      console.log(`✅ DEBUG: MATCH via LID mapping`);
+      return true;
+    }
+  }
+
+  // 3. Cek OWNER_LIDS di env
+  const lidsMatch = ownerLids.includes(clean);
+  if (lidsMatch) {
+    console.log(`✅ DEBUG: MATCH via OWNER_LIDS env`);
+    return true;
+  }
+
+  console.log(`❌ DEBUG: TIDAK MATCH — bukan owner`);
+  return false;
 }
 
 // Validasi
