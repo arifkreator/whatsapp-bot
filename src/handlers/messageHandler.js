@@ -1,39 +1,55 @@
-import config, { isOwnerNumber, registerLid } from '../config.js';
+import config, { isOwnerNumber } from '../config.js';
 import { checkSpam } from '../services/spamDetector.js';
 import { askGroq } from '../services/groqAI.js';
 import { handleCommand } from './commandHandler.js';
-import { hasSession, startSession, stopSession } from '../services/sessionManager.js';
+import {
+  getState, startSession, startLiveChat, stopSession,
+  resetSession, refreshTimer, isBotActive, isLiveChat,
+  isStopped, isNew, getSessionCount, getAllSessions,
+} from '../services/sessionManager.js';
 import logger from '../utils/logger.js';
 import fetch from 'node-fetch';
 
-// Set untuk track message ID yang sudah diproses (anti-duplikat)
+// Anti-duplikat
 const processedMsgIds = new Set();
 setInterval(() => processedMsgIds.clear(), 10 * 60 * 1000);
 
-// Set untuk track user yang sudah dapat hint /start (agar tidak spam)
-const hintedUsers = new Set();
+// Track user yang sudah dapat pesan perkenalan (hindari spam)
+const greetedUsers = new Set();
+
+// =============================================
+// PESAN PERKENALAN
+// =============================================
+function getWelcomeMessage(botName) {
+  return (
+    `👋 Halo! Saya *${botName}*.\n\n` +
+    `Saya adalah bot otomatis yang siap membantu kamu 24/7.\n\n` +
+    `Pilih salah satu opsi:\n\n` +
+    `🤖 */start* — Chat dengan bot AI\n` +
+    `   Bot akan membalas pesanmu secara otomatis\n\n` +
+    `👤 */livechat* — Chat langsung dengan admin\n` +
+    `   Bot akan diam, admin yang membalas\n\n` +
+    `_Sesi aktif selama 24 jam sejak pesan terakhir._`
+  );
+}
 
 export async function handleMessages(sock, { messages }) {
   for (const msg of messages) {
     try {
       await processMessage(sock, msg);
     } catch (error) {
-      logger.error(`❌ Error processing message: ${error.message}`);
+      logger.error(`❌ Error: ${error.message}`);
     }
   }
 }
 
 async function processMessage(sock, msg) {
-
-  // ── GUARD 1: Tidak ada konten ──────────────────────────────────────
   if (!msg.message) return;
 
-  // ── GUARD 2: Deduplikasi ───────────────────────────────────────────
   const msgId = msg.key.id;
   if (processedMsgIds.has(msgId)) return;
   processedMsgIds.add(msgId);
 
-  // ── GUARD 3: Pesan dari diri sendiri ──────────────────────────────
   const botJid = await getBotJid(sock);
   const botNumber = botJid?.split('@')[0]?.split(':')[0];
   const jid = msg.key.remoteJid;
@@ -45,95 +61,68 @@ async function processMessage(sock, msg) {
   const senderNumber = senderJid?.split('@')[0]?.split(':')[0];
   if (botNumber && senderNumber === botNumber) return;
 
-  // ── GUARD 4: Pesan terlalu lama ───────────────────────────────────
   const msgAge = Math.floor(Date.now() / 1000) - Number(msg.messageTimestamp);
   if (msgAge > 180) return;
 
-  // ── GUARD 5: Tipe pesan tidak relevan ─────────────────────────────
   const msgTypes = Object.keys(msg.message);
   const ignoredTypes = [
-    'reactionMessage', 'protocolMessage', 'senderKeyDistributionMessage',
-    'messageContextInfo', 'statusMentionMessage', 'pollCreationMessage',
-    'pollUpdateMessage', 'keepInChatMessage', 'callLogMesssage',
+    'reactionMessage','protocolMessage','senderKeyDistributionMessage',
+    'messageContextInfo','statusMentionMessage','pollCreationMessage',
+    'pollUpdateMessage','keepInChatMessage',
   ];
   if (msgTypes.every(t => ignoredTypes.includes(t))) return;
 
-  // ── Ambil teks pesan ───────────────────────────────────────────────
   const body = extractMessageText(msg);
   if (!body || body.trim().length === 0) return;
 
   const senderId = senderNumber || senderJid?.split('@')[0] || '';
   const isOwner = isOwnerNumber(senderId);
 
-  // Registrasi LID mapping jika ada info nomor HP dari pesan
-  // Baileys kadang menyertakan nomor HP asli di pushName atau verifiedBizName
-  const pushName = msg.pushName;
-  if (senderId && msg.key.remoteJid?.includes('@lid')) {
-    // Coba ambil nomor dari JID alternatif jika tersedia
-    const phone = senderJid?.replace('@s.whatsapp.net', '')?.replace('@lid', '');
-    registerLid(senderId, phone);
-  }
-
   logger.info(`📨 [${isGroup ? 'GROUP' : 'PRIVATE'}] ${senderId}: "${body.substring(0, 80)}"`);
 
-  // ── HANDLE /start dan /stop ────────────────────────────────────────
-  const bodyLower = body.trim().toLowerCase();
-
-  if (bodyLower === '/start') {
-    if (isGroup) return;
-    if (hasSession(senderId)) {
-      await sock.sendMessage(jid, {
-        text: `✅ Bot sudah aktif!\nKetik */stop* untuk menghentikan.`,
-      }, { quoted: msg });
-    } else {
-      startSession(senderId);
-      await sock.sendMessage(jid, {
-        text: `🤖 *Bot Aktif!*\n\nHalo! Aku siap membantumu.\n\n` +
-              `💬 Kirim pesan apapun untuk mulai ngobrol\n` +
-              `❓ Ketik *${config.prefix}help* untuk melihat semua fitur\n` +
-              `🛑 Ketik */stop* untuk menonaktifkan bot`,
-      }, { quoted: msg });
+  // ── GRUP — tidak butuh state management ──────────────────────────
+  if (isGroup) {
+    if (!isOwner) {
+      const spamResult = checkSpam(senderJid, body);
+      if (spamResult.isSpam) {
+        await handleSpam(sock, msg, jid, senderJid, spamResult.reason);
+        return;
+      }
+    }
+    if (body.startsWith(config.prefix)) {
+      const [cmd, ...args] = body.slice(config.prefix.length).trim().split(/\s+/);
+      const groupMetadata = await sock.groupMetadata(jid).catch(() => null);
+      const isAdmin = isGroup ? isGroupAdmin(groupMetadata, senderJid, botJid) : false;
+      await handleCommand(sock, msg, cmd, args, true, isAdmin, isOwner);
+      return;
+    }
+    const shouldAI = checkShouldAIReply(msg, jid, true, senderJid, botJid, botNumber);
+    if (shouldAI) {
+      await sock.sendPresenceUpdate('composing', jid);
+      const groupMetadata = await sock.groupMetadata(jid).catch(() => null);
+      const reply = await askGroq(senderJid, body, { groupName: groupMetadata?.subject, senderName: senderId });
+      await sock.sendPresenceUpdate('paused', jid);
+      await sock.sendMessage(jid, { text: reply }, { quoted: msg });
     }
     return;
   }
 
-  if (bodyLower === '/stop') {
-    if (isGroup) return;
-    if (!hasSession(senderId) && !isOwner) {
-      await sock.sendMessage(jid, {
-        text: `ℹ️ Bot memang belum aktif. Ketik */start* untuk mengaktifkan.`,
-      }, { quoted: msg });
-    } else {
-      stopSession(senderId);
-      await sock.sendMessage(jid, {
-        text: `🛑 *Bot dinonaktifkan.*\n\nKetik */start* kapanpun untuk mengaktifkan kembali.`,
-      }, { quoted: msg });
-    }
-    return;
-  }
+  // ── PRIVATE CHAT ──────────────────────────────────────────────────
 
-  // ── OWNER — forward semua pesan ke Bot Manager ────────────────────
-  if (isOwner && !isGroup) {
+  // Owner: bypass semua state, langsung proses
+  if (isOwner) {
     if (body.startsWith(config.prefix) && config.managerUrl) {
-      logger.info(`🔀 Forward ke Manager: ${config.managerUrl} | cmd: ${body}`);
       const reply = await forwardToManager(body, senderId);
       if (reply) {
         await sock.sendMessage(jid, { text: reply }, { quoted: msg });
         return;
       }
-      logger.warn(`⚠️ Manager tidak merespon, fallback ke lokal`);
-    } else if (body.startsWith(config.prefix) && !config.managerUrl) {
-      logger.warn(`⚠️ MANAGER_URL kosong! Proses lokal.`);
     }
-
-    // Owner bisa langsung pakai command lokal tanpa Manager
     if (body.startsWith(config.prefix)) {
       const [cmd, ...args] = body.slice(config.prefix.length).trim().split(/\s+/);
       await handleCommand(sock, msg, cmd, args, false, false, true);
       return;
     }
-
-    // Owner chat biasa → AI reply
     await sock.sendPresenceUpdate('composing', jid);
     const reply = await askGroq(senderJid, body, { senderName: senderId });
     await sock.sendPresenceUpdate('paused', jid);
@@ -141,83 +130,95 @@ async function processMessage(sock, msg) {
     return;
   }
 
-  // ── SESSION CHECK (user biasa, private chat) ──────────────────────
-  if (!isGroup && !isOwner) {
-    if (!hasSession(senderId)) {
-      const alreadyHinted = hintedUsers.has(senderId);
-      if (!alreadyHinted) {
-        hintedUsers.add(senderId);
-        setTimeout(() => hintedUsers.delete(senderId), 60 * 60 * 1000);
-        await sock.sendMessage(jid, {
-          text: `👋 Halo! Untuk mulai menggunakan bot, ketik:\n\n*/start*`,
-        }, { quoted: msg });
-      }
-      return; // STOP — jangan proses apapun
-    }
-  }
+  // ── STATE MACHINE untuk user biasa ────────────────────────────────
+  const bodyLower = body.trim().toLowerCase();
+  const state = getState(senderId);
 
-  // ── ANTI-SPAM (khusus grup) ────────────────────────────────────────
-  if (isGroup && !isOwner) {
-    const spamResult = checkSpam(senderJid, body);
-    if (spamResult.isSpam) {
-      logger.warn(`🚨 SPAM dari ${senderId}: ${spamResult.reason}`);
-      await handleSpam(sock, msg, jid, senderJid, spamResult.reason);
-      return;
-    }
-  }
-
-  // ── COMMAND HANDLER (user biasa / grup) ───────────────────────────
-  if (body.startsWith(config.prefix)) {
-    const [cmd, ...args] = body.slice(config.prefix.length).trim().split(/\s+/);
-    const groupMetadata = isGroup ? await sock.groupMetadata(jid).catch(() => null) : null;
-    const isAdmin = isGroup ? isGroupAdmin(groupMetadata, senderJid, botJid) : false;
-    await handleCommand(sock, msg, cmd, args, isGroup, isAdmin, isOwner);
+  // Handle /start
+  if (bodyLower === '/start') {
+    startSession(senderId);
+    greetedUsers.delete(senderId); // reset greeting
+    await sock.sendMessage(jid, {
+      text: `🤖 *Mode Bot Aktif!*\n\nHalo! Aku siap membantu kamu.\n\nKirim pesan apapun dan aku akan membalas.\nSesi aktif selama 24 jam sejak pesan terakhir.\n\n_Ketik */stop* untuk menghentikan bot._`,
+    }, { quoted: msg });
     return;
   }
 
-  // ── AI AGENT ──────────────────────────────────────────────────────
-  const shouldReplyWithAI = checkShouldAIReply(msg, jid, isGroup, senderJid, botJid, botNumber);
-
-  if (shouldReplyWithAI) {
-    await sock.sendPresenceUpdate('composing', jid);
-    const groupMetadata = isGroup ? await sock.groupMetadata(jid).catch(() => null) : null;
-    const context = {
-      groupName: groupMetadata?.subject,
-      senderName: senderId,
-    };
-    const reply = await askGroq(senderJid, body, context);
-    await sock.sendPresenceUpdate('paused', jid);
-    await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+  // Handle /livechat
+  if (bodyLower === '/livechat') {
+    startLiveChat(senderId);
+    greetedUsers.delete(senderId);
+    await sock.sendMessage(jid, {
+      text: `👤 *Mode Live Chat Aktif!*\n\nKamu akan terhubung langsung dengan admin.\nBot tidak akan membalas selama 24 jam.\n\nTunggu sebentar, admin akan segera membalas! 😊\n\n_Sesi berakhir otomatis jika tidak ada pesan 24 jam._`,
+    }, { quoted: msg });
+    return;
   }
-}
 
-// ── FORWARD KE BOT MANAGER ────────────────────────────────────────────
-async function forwardToManager(message, senderNumber) {
-  try {
-    const response = await fetch(`${config.managerUrl}/webhook`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        secret: config.managerSecret,
-        senderNumber,
-        message,
-        botId: config.botId,
-      }),
-      signal: AbortSignal.timeout(10000),
-    });
+  // Handle /stop
+  if (bodyLower === '/stop') {
+    if (state === 'NEW') {
+      await sock.sendMessage(jid, {
+        text: `ℹ️ Tidak ada sesi aktif. Ketik */start* untuk memulai.`,
+      }, { quoted: msg });
+    } else {
+      stopSession(senderId);
+      await sock.sendMessage(jid, {
+        text: `🛑 *Bot dihentikan.*\n\nBot tidak akan membalas lagi.\nKetik */start* kapanpun untuk mengaktifkan kembali.`,
+      }, { quoted: msg });
+    }
+    return;
+  }
 
-    if (!response.ok) {
-      logger.error(`❌ Manager webhook error: HTTP ${response.status}`);
-      return null;
+  // ── STATE: NEW ────────────────────────────────────────────────────
+  if (state === 'NEW') {
+    // Kirim perkenalan hanya sekali per "sesi baru"
+    if (!greetedUsers.has(senderId)) {
+      greetedUsers.add(senderId);
+      // Hapus greeting setelah 1 jam agar bisa greet lagi kalau balik
+      setTimeout(() => greetedUsers.delete(senderId), 60 * 60 * 1000);
+      await sock.sendMessage(jid, {
+        text: getWelcomeMessage(config.botName),
+      }, { quoted: msg });
+    }
+    return;
+  }
+
+  // ── STATE: STOPPED ────────────────────────────────────────────────
+  if (state === 'STOPPED') {
+    // Bot diam total — tidak balas apapun
+    // Tapi kalau user chat lagi setelah STOPPED expired (24 jam)
+    // state sudah jadi NEW karena TTL
+    return;
+  }
+
+  // ── STATE: LIVECHAT ───────────────────────────────────────────────
+  if (state === 'LIVECHAT') {
+    // Bot diam — reset timer 24 jam setiap ada pesan
+    refreshTimer(senderId);
+    // Tidak balas apapun — kamu yang balas manual
+    return;
+  }
+
+  // ── STATE: BOT_ACTIVE ─────────────────────────────────────────────
+  if (state === 'BOT_ACTIVE') {
+    // Reset timer 24 jam setiap ada pesan
+    refreshTimer(senderId);
+
+    // Command handler
+    if (body.startsWith(config.prefix)) {
+      const [cmd, ...args] = body.slice(config.prefix.length).trim().split(/\s+/);
+      await handleCommand(sock, msg, cmd, args, false, false, false);
+      return;
     }
 
-    const data = await response.json();
-    logger.info(`✅ Manager reply: ${data.reply?.substring(0, 50)}`);
-    return data.reply || null;
-
-  } catch (error) {
-    logger.error(`❌ Gagal forward ke Manager: ${error.message}`);
-    return null;
+    // AI reply
+    if (config.aiAutoReplyPrivate) {
+      await sock.sendPresenceUpdate('composing', jid);
+      const reply = await askGroq(senderJid, body, { senderName: senderId });
+      await sock.sendPresenceUpdate('paused', jid);
+      await sock.sendMessage(jid, { text: reply }, { quoted: msg });
+    }
+    return;
   }
 }
 
@@ -241,13 +242,10 @@ function extractMessageText(msg) {
 function checkShouldAIReply(msg, jid, isGroup, senderJid, botJid, botNumber) {
   if (!isGroup) return config.aiAutoReplyPrivate;
   if (!config.aiAutoReplyGroup) return false;
-
   const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
   if (mentionedJids.some(m => m.includes(botNumber))) return true;
-
   const quotedParticipant = msg.message?.extendedTextMessage?.contextInfo?.participant;
   if (quotedParticipant === botJid) return true;
-
   return false;
 }
 
@@ -259,31 +257,43 @@ async function handleSpam(sock, msg, jid, senderJid, reason) {
     rate_limit: `⚠️ Terlalu banyak pesan! Kamu di-mute ${config.spamMuteDuration} detik.`,
     pattern: '🚫 Pesan terdeteksi sebagai spam!',
   }[reason] || '🚫 Spam terdeteksi!';
-
   if (reason !== 'muted') {
-    await sock.sendMessage(jid, {
-      text: `@${userId} ${reasonText}`,
-      mentions: [senderJid],
-    });
+    await sock.sendMessage(jid, { text: `@${userId} ${reasonText}`, mentions: [senderJid] });
   }
-
-  try {
-    await sock.sendMessage(jid, { delete: msg.key });
-  } catch { /* bot bukan admin */ }
+  try { await sock.sendMessage(jid, { delete: msg.key }); } catch {}
 }
 
-function isGroupAdmin(groupMetadata, userJid, botJid) {
+function isGroupAdmin(groupMetadata, userJid) {
   if (!groupMetadata) return false;
-  const admins = groupMetadata.participants
+  return groupMetadata.participants
     .filter(p => p.admin === 'admin' || p.admin === 'superadmin')
-    .map(p => p.id);
-  return admins.includes(userJid);
+    .map(p => p.id)
+    .includes(userJid);
+}
+
+async function forwardToManager(message, senderNumber) {
+  try {
+    const response = await fetch(`${config.managerUrl}/webhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret: config.managerSecret,
+        senderNumber,
+        message,
+        botId: config.botId,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.reply || null;
+  } catch {
+    return null;
+  }
 }
 
 let cachedBotJid = null;
 async function getBotJid(sock) {
-  if (!cachedBotJid) {
-    cachedBotJid = sock.user?.id || '';
-  }
+  if (!cachedBotJid) cachedBotJid = sock.user?.id || '';
   return cachedBotJid;
 }
