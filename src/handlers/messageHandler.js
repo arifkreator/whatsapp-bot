@@ -1,6 +1,6 @@
 import config, { isOwnerNumber } from '../config.js';
 import { checkSpam } from '../services/spamDetector.js';
-import { askGroq } from '../services/groqAI.js';
+import { askAI } from '../services/aiRouter.js';
 import { handleCommand } from './commandHandler.js';
 import {
   getState, startSession, startLiveChat, stopSession,
@@ -100,7 +100,7 @@ async function processMessage(sock, msg) {
     if (shouldAI) {
       await sock.sendPresenceUpdate('composing', jid);
       const groupMetadata = await sock.groupMetadata(jid).catch(() => null);
-      const reply = await askGroq(senderJid, body, { groupName: groupMetadata?.subject, senderName: senderId });
+      const reply = await askAI(senderJid, body, { groupName: groupMetadata?.subject, senderName: senderId });
       await sock.sendPresenceUpdate('paused', jid);
       await sock.sendMessage(jid, { text: reply }, { quoted: msg });
     }
@@ -124,7 +124,7 @@ async function processMessage(sock, msg) {
       return;
     }
     await sock.sendPresenceUpdate('composing', jid);
-    const reply = await askGroq(senderJid, body, { senderName: senderId });
+    const reply = await askAI(senderJid, body, { senderName: senderId });
     await sock.sendPresenceUpdate('paused', jid);
     await sock.sendMessage(jid, { text: reply }, { quoted: msg });
     return;
@@ -214,7 +214,7 @@ async function processMessage(sock, msg) {
     // AI reply
     if (config.aiAutoReplyPrivate) {
       await sock.sendPresenceUpdate('composing', jid);
-      const reply = await askGroq(senderJid, body, { senderName: senderId });
+      const reply = await askAI(senderJid, body, { senderName: senderId });
       await sock.sendPresenceUpdate('paused', jid);
       await sock.sendMessage(jid, { text: reply }, { quoted: msg });
     }

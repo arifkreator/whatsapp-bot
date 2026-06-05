@@ -1,6 +1,8 @@
 import config, { isOwnerNumber } from '../config.js';
 import { muteUser, unmuteUser, resetUserSpam, getSpamStats } from '../services/spamDetector.js';
 import { resetConversation, getActiveConversations, getQuotaStatus } from '../services/groqAI.js';
+import { resetHermesConversation, getHermesActiveConversations } from '../services/hermesAI.js';
+import { askAIForced, getRouterInfo } from '../services/aiRouter.js';
 import { getAllSessions, getSessionCount, stopSession, resetSession, getState } from '../services/sessionManager.js';
 import logger from '../utils/logger.js';
 
@@ -28,6 +30,7 @@ export async function handleCommand(sock, msg, command, args, isGroup, isAdmin, 
     case 'reset':
     case 'clear':
       resetConversation(senderJid);
+      resetHermesConversation(senderJid);
       return sock.sendMessage(jid, {
         text: '🔄 Riwayat percakapan AI kamu sudah direset!'
       }, { quoted: msg });
@@ -132,6 +135,40 @@ export async function handleCommand(sock, msg, command, args, isGroup, isAdmin, 
         text: `📊 State user ${args[0]}: *${userState}*`
       });
 
+    case 'aiinfo':
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      const routerInfo = getRouterInfo();
+      const quota2 = getQuotaStatus();
+      return sock.sendMessage(jid, {
+        text: `🧠 *AI Router Info*\n\n` +
+          `*Groq:*\n` +
+          `  🔑 Key aktif: ${quota2.activeKeys}/${quota2.totalKeys}\n` +
+          `  💬 Sesi aktif: ${getActiveConversations()}\n` +
+          `  🤖 Model: ${config.groqModel}\n\n` +
+          `*Hermes Agent:*\n` +
+          `  📡 Status: ${routerInfo.hermesEnabled ? '✅ Enabled' : '❌ Disabled'}\n` +
+          `  🔗 URL: ${routerInfo.hermesUrl || 'belum diset'}\n` +
+          `  🟢 Online: ${routerInfo.hermesAvailable === null ? 'belum dicek' : routerInfo.hermesAvailable ? 'ya' : 'tidak'}\n` +
+          `  💬 Sesi aktif: ${getHermesActiveConversations()}\n` +
+          `  🕐 Last check: ${routerInfo.lastChecked || '-'}`
+      });
+
+    case 'hermes':
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}hermes [pertanyaan]`
+      });
+      const hermesQuery = args.join(' ');
+      await sock.sendPresenceUpdate('composing', jid);
+      try {
+        const hermesReply = await askAIForced(senderJid, hermesQuery, { senderName: sender }, 'hermes');
+        await sock.sendPresenceUpdate('paused', jid);
+        return sock.sendMessage(jid, { text: `🧠 *Hermes:*\n\n${hermesReply}` }, { quoted: msg });
+      } catch (e) {
+        await sock.sendPresenceUpdate('paused', jid);
+        return sock.sendMessage(jid, { text: `❌ Hermes error: ${e.message}` });
+      }
+
     default:
       return sock.sendMessage(jid, {
         text: `❓ Command *${config.prefix}${command}* tidak dikenal.\nKetik *${config.prefix}help* untuk daftar command.`
@@ -171,6 +208,8 @@ async function sendHelp(sock, jid, isAdmin, isOwner) {
     text += `  ${config.prefix}state 628xxx — Cek state user\n`;
     text += `  ${config.prefix}kick-session 628xxx — Stop sesi user\n`;
     text += `  ${config.prefix}reset-session 628xxx — Reset sesi user ke NEW\n`;
+    text += `  ${config.prefix}aiinfo — Info status AI router & Hermes\n`;
+    text += `  ${config.prefix}hermes [pesan] — Force kirim ke Hermes Agent\n`;
   }
 
   return sock.sendMessage(jid, { text });

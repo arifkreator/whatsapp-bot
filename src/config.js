@@ -47,6 +47,14 @@ export const config = {
   aiAutoReplyGroup: process.env.AI_AUTO_REPLY_GROUP !== 'false',
   aiCooldownSeconds: parseInt(process.env.AI_COOLDOWN_SECONDS) || 5,
 
+  // Hermes Agent
+  hermesEnabled: process.env.HERMES_ENABLED === 'true',
+  hermesUrl: process.env.HERMES_URL || '',
+  hermesApiKey: process.env.HERMES_API_KEY || '',
+  hermesModel: process.env.HERMES_MODEL || 'hermes',
+  hermesMaxTokens: parseInt(process.env.HERMES_MAX_TOKENS) || 2048,
+  hermesSystemPrompt: process.env.HERMES_SYSTEM_PROMPT || '',
+
   // Anti-spam
   spamMaxMessages: parseInt(process.env.SPAM_MAX_MESSAGES) || 5,
   spamTimeWindow: parseInt(process.env.SPAM_TIME_WINDOW) || 10,
@@ -75,6 +83,12 @@ logger.info(`👑 Owner IDs terdaftar: ${[...OWNER_ID_SET].join(', ') || 'KOSONG
 
 if (!config.groqApiKey) {
   logger.warn('⚠️  GROQ_API_KEY belum diset!');
+}
+if (config.hermesEnabled && !config.hermesUrl) {
+  logger.warn('⚠️  HERMES_ENABLED=true tapi HERMES_URL belum diset!');
+}
+if (config.hermesEnabled) {
+  logger.info(`🧠 Hermes Agent: aktif → ${config.hermesUrl}`);
 }
 if (OWNER_ID_SET.size === 0) {
   logger.warn('⚠️  Tidak ada Owner ID terdaftar! Set OWNER_IDS di Railway.');
