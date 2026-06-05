@@ -77,6 +77,7 @@ async function processMessage(sock, msg) {
 
   const senderId = senderNumber || senderJid?.split('@')[0] || '';
   const isOwner = isOwnerNumber(senderId);
+  logger.info(`🔍 DEBUG isOwner: senderId="${senderId}" isOwner=${isOwner}`);
 
   logger.info(`📨 [${isGroup ? 'GROUP' : 'PRIVATE'}] ${senderId}: "${body.substring(0, 80)}"`);
 
