@@ -4,6 +4,7 @@ import { resetConversation, getActiveConversations, getQuotaStatus } from '../se
 import { resetHermesConversation, getHermesActiveConversations } from '../services/hermesAI.js';
 import { askAIForced, getRouterInfo } from '../services/aiRouter.js';
 import { getAllSessions, getSessionCount, stopSession, resetSession, getState } from '../services/sessionManager.js';
+import { getSystemPrompt, getHermesSystemPrompt, setSystemPrompt, setHermesSystemPrompt, resetSystemPrompt, resetHermesSystemPrompt, getBotConfig } from '../services/configManager.js';
 import logger from '../utils/logger.js';
 
 export async function handleCommand(sock, msg, command, args, isGroup, isAdmin, isOwner) {
@@ -135,6 +136,68 @@ export async function handleCommand(sock, msg, command, args, isGroup, isAdmin, 
         text: `📊 State user ${args[0]}: *${userState}*`
       });
 
+    // =============================================
+    // 🎨 PROMPT MANAGEMENT
+    // =============================================
+    case 'showprompt':
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      const currentPrompt = getSystemPrompt();
+      const cfg = getBotConfig();
+      return sock.sendMessage(jid, {
+        text: `📝 *System Prompt Saat Ini (Groq):*\n\n${currentPrompt}\n\n` +
+          `_Terakhir diubah: ${cfg.updatedAt ? new Date(cfg.updatedAt).toLocaleString('id-ID') : 'belum pernah'}_`
+      });
+
+    case 'setprompt':
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}setprompt [prompt baru]\n\nContoh:\n${config.prefix}setprompt Kamu adalah asisten bernama Aria, ramah dan membantu.`
+      });
+      const newPrompt = args.join(' ');
+      if (newPrompt.length > 2000) return sock.sendMessage(jid, {
+        text: '❌ Prompt terlalu panjang! Maksimal 2000 karakter.'
+      });
+      setSystemPrompt(newPrompt, sender);
+      return sock.sendMessage(jid, {
+        text: `✅ *System prompt Groq berhasil diupdate!*\n\n📝 Prompt baru:\n_${newPrompt}_\n\n💡 Berlaku untuk semua user mulai sekarang.`
+      });
+
+    case 'resetprompt':
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      resetSystemPrompt(sender);
+      return sock.sendMessage(jid, {
+        text: `✅ System prompt Groq direset ke default!\n\n📝 Prompt default:\n_${getSystemPrompt()}_`
+      });
+
+    case 'showprompt-hermes':
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!config.hermesEnabled) return sock.sendMessage(jid, { text: '❌ Hermes belum aktif.' });
+      const hPrompt = getHermesSystemPrompt();
+      return sock.sendMessage(jid, {
+        text: `🧠 *System Prompt Hermes:*\n\n${hPrompt || '_(menggunakan prompt default)_'}`
+      });
+
+    case 'setprompt-hermes':
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!config.hermesEnabled) return sock.sendMessage(jid, { text: '❌ Hermes belum aktif.' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}setprompt-hermes [prompt baru]`
+      });
+      const newHPrompt = args.join(' ');
+      if (newHPrompt.length > 2000) return sock.sendMessage(jid, {
+        text: '❌ Prompt terlalu panjang! Maksimal 2000 karakter.'
+      });
+      setHermesSystemPrompt(newHPrompt, sender);
+      return sock.sendMessage(jid, {
+        text: `✅ *System prompt Hermes berhasil diupdate!*\n\n🧠 Prompt baru:\n_${newHPrompt}_`
+      });
+
+    case 'resetprompt-hermes':
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!config.hermesEnabled) return sock.sendMessage(jid, { text: '❌ Hermes belum aktif.' });
+      resetHermesSystemPrompt(sender);
+      return sock.sendMessage(jid, { text: '✅ System prompt Hermes direset ke default!' });
+
     case 'aiinfo':
       if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
       const routerInfo = getRouterInfo();
@@ -210,6 +273,15 @@ async function sendHelp(sock, jid, isAdmin, isOwner) {
     text += `  ${config.prefix}reset-session 628xxx — Reset sesi user ke NEW\n`;
     text += `  ${config.prefix}aiinfo — Info status AI router & Hermes\n`;
     text += `  ${config.prefix}hermes [pesan] — Force kirim ke Hermes Agent\n`;
+    text += `\n🎨 *Prompt Management:*\n`;
+    text += `  ${config.prefix}showprompt — Lihat system prompt Groq\n`;
+    text += `  ${config.prefix}setprompt [teks] — Set system prompt Groq\n`;
+    text += `  ${config.prefix}resetprompt — Reset prompt Groq ke default\n`;
+    if (config.hermesEnabled) {
+      text += `  ${config.prefix}showprompt-hermes — Lihat system prompt Hermes\n`;
+      text += `  ${config.prefix}setprompt-hermes [teks] — Set system prompt Hermes\n`;
+      text += `  ${config.prefix}resetprompt-hermes — Reset prompt Hermes ke default\n`;
+    }
   }
 
   return sock.sendMessage(jid, { text });

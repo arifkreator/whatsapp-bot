@@ -1,6 +1,7 @@
 import NodeCache from 'node-cache';
 import config from '../config.js';
 import logger from '../utils/logger.js';
+import { getSystemPrompt } from './configManager.js';
 
 // =============================================
 // GROQ CLIENT — pakai fetch langsung, no SDK needed
@@ -145,8 +146,8 @@ export async function askGroq(userId, userMessage, context = {}) {
   try {
     setUserCooldown(userId);
 
-    // Susun system prompt
-    let systemPrompt = config.aiSystemPrompt;
+    // Susun system prompt (dinamis dari configManager)
+    let systemPrompt = getSystemPrompt();
     if (context.groupName) systemPrompt += `\nKamu sedang di grup "${context.groupName}".`;
     if (context.senderName) systemPrompt += `\nSedang berbicara dengan: ${context.senderName}.`;
 
@@ -181,7 +182,7 @@ export async function askGroq(userId, userMessage, context = {}) {
         try {
           const history = conversationHistory.get(userId) || [];
           const messages = [
-            { role: 'system', content: config.aiSystemPrompt },
+            { role: 'system', content: getSystemPrompt() },
             ...history,
             { role: 'user', content: userMessage },
           ];

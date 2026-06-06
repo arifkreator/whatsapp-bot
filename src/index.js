@@ -8,6 +8,7 @@ import {
 import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import { handleMessages } from './handlers/messageHandler.js';
+import { loadConfig } from './services/configManager.js';
 import { handleManagerRequest } from './handlers/managerHandler.js';
 import logger from './utils/logger.js';
 import config from './config.js';
@@ -95,6 +96,7 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT = 5;
 
 async function startBot() {
+  loadConfig();
   logger.info(`🚀 Menjalankan ${config.botName}...`);
 
   // Pastikan folder sesi ada
@@ -135,28 +137,22 @@ async function startBot() {
 
     if (qr) {
       currentQR = qr;
+      // Tetap tampilkan di terminal (kecil)
       qrcode.generate(qr, { small: true });
       logger.info('─'.repeat(50));
       logger.info('📱 QR CODE TERSEDIA — Buka URL ini di browser:');
       logger.info(`🔗 https://<railway-domain>/qr`);
+      logger.info('💡 Atau cek tab "Settings > Domains" di Railway untuk URL kamu');
       logger.info('─'.repeat(50));
     }
 
     if (connection === 'open') {
-      currentQR = null;
+      currentQR = null; // Reset QR setelah login
       reconnectAttempts = 0;
       logger.info(`✅ ${config.botName} berhasil terhubung sebagai ${sock.user?.id?.split(':')[0]}`);
       logger.info(`🤖 AI: Groq (${config.groqModel}) — FREE tier`);
-      logger.info(`🛡️ Anti-spam: aktif`);
+      logger.info(`🛡️ Anti-spam: aktif (max ${config.spamMaxMessages} msg/${config.spamTimeWindow}s)`);
       logger.info(`📌 Prefix: "${config.prefix}"`);
-
-      // Notifikasi owner: bot online
-      await notifyOwner(sock,
-        `✅ *${config.botName} Online*\n\n` +
-        `🤖 Bot berhasil terhubung\n` +
-        `🧠 AI: Groq (${config.groqModel})\n` +
-        `🕐 ${new Date().toLocaleString('id-ID')}`
-      );
     }
 
     if (connection === 'close') {
@@ -169,40 +165,14 @@ async function startBot() {
         reconnectAttempts++;
         const delay = Math.min(5000 * reconnectAttempts, 30000);
         logger.info(`🔄 Reconnect attempt ${reconnectAttempts}/${MAX_RECONNECT} dalam ${delay / 1000}s...`);
-
-        // Notifikasi owner: bot disconnect
-        await notifyOwner(sock,
-          `⚠️ *${config.botName} Disconnect*\n\n` +
-          `Koneksi terputus (reason: ${reason})\n` +
-          `🔄 Mencoba reconnect ${reconnectAttempts}/${MAX_RECONNECT}...\n` +
-          `🕐 ${new Date().toLocaleString('id-ID')}`
-        );
-
         setTimeout(startBot, delay);
       } else if (reason === DisconnectReason.loggedOut) {
-        logger.error('🚫 Bot ter-logout!');
-
-        // Notifikasi owner: bot logout
-        await notifyOwner(sock,
-          `🚫 *${config.botName} Ter-logout!*\n\n` +
-          `Bot ter-logout dari WhatsApp.\n` +
-          `Perlu scan QR ulang!\n\n` +
-          `Buka: ${process.env.RAILWAY_PUBLIC_DOMAIN ? 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN : 'URL Railway'}/qr`
-        );
-
+        logger.error('🚫 Bot ter-logout! Hapus folder sessions/ dan scan QR ulang.');
+        // Hapus sesi lama
         await fs.rm(config.sessionPath, { recursive: true, force: true });
         process.exit(1);
       } else {
-        logger.error('❌ Max reconnect tercapai.');
-
-        // Notifikasi owner: bot mati
-        await notifyOwner(sock,
-          `❌ *${config.botName} Mati!*\n\n` +
-          `Max reconnect tercapai.\n` +
-          `Bot butuh restart manual di Railway.\n` +
-          `🕐 ${new Date().toLocaleString('id-ID')}`
-        );
-
+        logger.error('❌ Max reconnect tercapai. Restart manual diperlukan.');
         process.exit(1);
       }
     }
@@ -247,26 +217,12 @@ async function startBot() {
 }
 
 // =============================================
-// NOTIFY OWNER — kirim WA ke semua owner number
-// =============================================
-async function notifyOwner(sock, message) {
-  if (!config.ownerNumbers?.length) return;
-  for (const ownerNumber of config.ownerNumbers) {
-    try {
-      const jid = `${ownerNumber}@s.whatsapp.net`;
-      await sock?.sendMessage(jid, { text: message });
-    } catch {
-      // Silent fail — jangan crash bot karena notif gagal
-    }
-  }
-}
-
-// =============================================
 // GRACEFUL SHUTDOWN
 // =============================================
 
 process.on('SIGINT', async () => {
   logger.info('\n👋 Bot dihentikan (SIGINT)');
+  if (sock) await sock.logout().catch(() => {});
   process.exit(0);
 });
 
@@ -275,7 +231,7 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-process.on('unhandledRejection', (reason) => {
+process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection:', reason);
 });
 

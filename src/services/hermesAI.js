@@ -1,6 +1,7 @@
 import NodeCache from 'node-cache';
 import config from '../config.js';
 import logger from '../utils/logger.js';
+import { getHermesSystemPrompt } from './configManager.js';
 
 // =============================================
 // HERMES AGENT CLIENT
@@ -98,8 +99,8 @@ export async function askHermes(userId, userMessage, context = {}) {
   pendingRequests.set(userId, true);
 
   try {
-    // Susun system prompt untuk Hermes
-    let systemPrompt = config.hermesSystemPrompt || config.aiSystemPrompt;
+    // Susun system prompt untuk Hermes (dinamis dari configManager)
+    let systemPrompt = getHermesSystemPrompt();
     if (context.groupName) systemPrompt += `\nKamu sedang di grup "${context.groupName}".`;
     if (context.senderName) systemPrompt += `\nSedang berbicara dengan: ${context.senderName}.`;
 
