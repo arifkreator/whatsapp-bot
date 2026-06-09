@@ -5,6 +5,7 @@ import { resetHermesConversation, getHermesActiveConversations } from '../servic
 import { askAIForced, getRouterInfo } from '../services/aiRouter.js';
 import { getAllSessions, getSessionCount, stopSession, resetSession, getState } from '../services/sessionManager.js';
 import { getSystemPrompt, getHermesSystemPrompt, setSystemPrompt, setHermesSystemPrompt, resetSystemPrompt, resetHermesSystemPrompt, getBotConfig } from '../services/configManager.js';
+import { addSkill, removeSkill, getSkill, listSkills, getSkillCount } from '../services/skillsManager.js';
 import logger from '../utils/logger.js';
 
 export async function handleCommand(sock, msg, command, args, isGroup, isAdmin, isOwner) {
@@ -232,6 +233,85 @@ export async function handleCommand(sock, msg, command, args, isGroup, isAdmin, 
         return sock.sendMessage(jid, { text: `❌ Hermes error: ${e.message}` });
       }
 
+    // =============================================
+    // 📚 SKILLS MANAGEMENT
+    // =============================================
+    case 'listskill':
+    case 'listskills': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      const skills = listSkills();
+      if (skills.length === 0) {
+        return sock.sendMessage(jid, {
+          text: `📚 *Belum ada skill terdaftar.*\n\nTambah skill dengan:\n${config.prefix}addskill nama | isi konten`
+        });
+      }
+      const list = skills.map((s, i) =>
+        `${i + 1}. *${s.name}*\n   _${s.content.substring(0, 60)}${s.content.length > 60 ? '...' : ''}_`
+      ).join('\n\n');
+      return sock.sendMessage(jid, {
+        text: `📚 *Daftar Skills (${skills.length}):*\n\n${list}\n\n💡 Ketik *${config.prefix}viewskill [nama]* untuk lihat isi lengkap.`
+      });
+    }
+
+    case 'addskill': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      const fullText = args.join(' ');
+      const separatorIdx = fullText.indexOf('|');
+      if (separatorIdx === -1) {
+        return sock.sendMessage(jid, {
+          text: `❌ Format: ${config.prefix}addskill [nama] | [isi konten]\n\n*Contoh:*\n${config.prefix}addskill FAQ Harga | Harga produk kami:\n- Paket Basic: Rp 75.000/bulan\n- Paket Pro: Rp 150.000/bulan\n- Paket Ultimate: Rp 300.000/bulan`
+        });
+      }
+      const skillName = fullText.substring(0, separatorIdx).trim();
+      const skillContent = fullText.substring(separatorIdx + 1).trim();
+      if (!skillName) return sock.sendMessage(jid, { text: '❌ Nama skill tidak boleh kosong!' });
+      if (!skillContent) return sock.sendMessage(jid, { text: '❌ Isi konten skill tidak boleh kosong!' });
+      if (skillContent.length > 3000) return sock.sendMessage(jid, {
+        text: '❌ Konten terlalu panjang! Maksimal 3000 karakter per skill.'
+      });
+      const key = addSkill(skillName, skillContent, sender);
+      if (!key) return sock.sendMessage(jid, { text: '❌ Gagal menyimpan skill. Coba lagi.' });
+      return sock.sendMessage(jid, {
+        text: `✅ *Skill berhasil disimpan!*\n\n📚 Nama: *${skillName}*\n🔑 Key: \`${key}\`\n📝 Konten:\n${skillContent}\n\n💡 Skill ini akan otomatis digunakan AI saat menjawab pertanyaan.`
+      });
+    }
+
+    case 'viewskill': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}viewskill [nama]`
+      });
+      const skillKey = args.join(' ');
+      const skill = getSkill(skillKey);
+      if (!skill) return sock.sendMessage(jid, {
+        text: `❌ Skill "${skillKey}" tidak ditemukan.\n\nKetik *${config.prefix}listskills* untuk melihat daftar skill.`
+      });
+      return sock.sendMessage(jid, {
+        text: `📚 *${skill.name}*\n\n${skill.content}\n\n_Terakhir diupdate: ${new Date(skill.updatedAt).toLocaleString('id-ID')}_`
+      });
+    }
+
+    case 'removeskill':
+    case 'deleteskill': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}removeskill [nama]`
+      });
+      const removeKey = args.join(' ');
+      const removed = removeSkill(removeKey);
+      if (!removed) return sock.sendMessage(jid, {
+        text: `❌ Skill "${removeKey}" tidak ditemukan.\n\nKetik *${config.prefix}listskills* untuk melihat daftar skill.`
+      });
+      return sock.sendMessage(jid, {
+        text: `🗑️ Skill *${removeKey}* berhasil dihapus.`
+      });
+    }
+
+    case 'default':
+      return sock.sendMessage(jid, {
+        text: `❓ Command *${config.prefix}default* tidak dikenal.\nKetik *${config.prefix}help* untuk daftar command.`
+      }, { quoted: msg });
+
     default:
       return sock.sendMessage(jid, {
         text: `❓ Command *${config.prefix}${command}* tidak dikenal.\nKetik *${config.prefix}help* untuk daftar command.`
@@ -273,7 +353,11 @@ async function sendHelp(sock, jid, isAdmin, isOwner) {
     text += `  ${config.prefix}reset-session 628xxx — Reset sesi user ke NEW\n`;
     text += `  ${config.prefix}aiinfo — Info status AI router & Hermes\n`;
     text += `  ${config.prefix}hermes [pesan] — Force kirim ke Hermes Agent\n`;
-    text += `\n🎨 *Prompt Management:*\n`;
+    text += `\n📚 *Skills Management:*\n`;
+    text += `  ${config.prefix}listskills — Daftar semua skill\n`;
+    text += `  ${config.prefix}addskill [nama] | [konten] — Tambah/update skill\n`;
+    text += `  ${config.prefix}viewskill [nama] — Lihat isi skill\n`;
+    text += `  ${config.prefix}removeskill [nama] — Hapus skill\n`;
     text += `  ${config.prefix}showprompt — Lihat system prompt Groq\n`;
     text += `  ${config.prefix}setprompt [teks] — Set system prompt Groq\n`;
     text += `  ${config.prefix}resetprompt — Reset prompt Groq ke default\n`;

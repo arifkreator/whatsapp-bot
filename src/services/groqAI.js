@@ -2,6 +2,7 @@ import NodeCache from 'node-cache';
 import config from '../config.js';
 import logger from '../utils/logger.js';
 import { getSystemPrompt } from './configManager.js';
+import { buildSkillsContext } from './skillsManager.js';
 
 // =============================================
 // GROQ CLIENT — pakai fetch langsung, no SDK needed
@@ -146,8 +147,8 @@ export async function askGroq(userId, userMessage, context = {}) {
   try {
     setUserCooldown(userId);
 
-    // Susun system prompt (dinamis dari configManager)
-    let systemPrompt = getSystemPrompt();
+    // Susun system prompt (dinamis dari configManager + skills)
+    let systemPrompt = getSystemPrompt() + buildSkillsContext();
     if (context.groupName) systemPrompt += `\nKamu sedang di grup "${context.groupName}".`;
     if (context.senderName) systemPrompt += `\nSedang berbicara dengan: ${context.senderName}.`;
 
