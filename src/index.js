@@ -10,6 +10,7 @@ import qrcode from 'qrcode-terminal';
 import { handleMessages } from './handlers/messageHandler.js';
 import { loadConfig } from './services/configManager.js';
 import { loadSkills } from './services/skillsManager.js';
+import { loadContacts } from './services/broadcastManager.js';
 import { handleManagerRequest } from './handlers/managerHandler.js';
 import logger from './utils/logger.js';
 import config from './config.js';
@@ -99,6 +100,7 @@ const MAX_RECONNECT = 5;
 async function startBot() {
   loadConfig();
   loadSkills();
+  loadContacts();
   logger.info(`🚀 Menjalankan ${config.botName}...`);
 
   // Pastikan folder sesi ada

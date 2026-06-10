@@ -6,6 +6,7 @@ import { askAIForced, getRouterInfo } from '../services/aiRouter.js';
 import { getAllSessions, getSessionCount, stopSession, resetSession, getState } from '../services/sessionManager.js';
 import { getSystemPrompt, getHermesSystemPrompt, setSystemPrompt, setHermesSystemPrompt, resetSystemPrompt, resetHermesSystemPrompt, getBotConfig } from '../services/configManager.js';
 import { addSkill, removeSkill, getSkill, listSkills, getSkillCount } from '../services/skillsManager.js';
+import { addContact, addContactsBulk, removeContact, clearAllContacts, listContacts, getContactCount, runBroadcast, isBroadcastActive, BROADCAST_LIMITS } from '../services/broadcastManager.js';
 import logger from '../utils/logger.js';
 
 export async function handleCommand(sock, msg, command, args, isGroup, isAdmin, isOwner) {
@@ -307,6 +308,148 @@ export async function handleCommand(sock, msg, command, args, isGroup, isAdmin, 
       });
     }
 
+    // =============================================
+    // 📢 BROADCAST / BLAST
+    // =============================================
+    case 'blist':
+    case 'broadcastlist': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      const contacts = listContacts();
+      if (contacts.length === 0) {
+        return sock.sendMessage(jid, {
+          text: `📋 *Daftar kontak broadcast kosong.*\n\nTambah kontak:\n${config.prefix}badd 628xxx\n${config.prefix}baddmany 628xxx, 628yyy, 628zzz`
+        });
+      }
+      const list = contacts.slice(0, 30).map((c, i) =>
+        `${i + 1}. ${c.label !== c.number ? `*${c.label}* — ` : ''}${c.number}`
+      ).join('\n');
+      const more = contacts.length > 30 ? `\n_...dan ${contacts.length - 30} lainnya_` : '';
+      return sock.sendMessage(jid, {
+        text: `📋 *Daftar Kontak Broadcast (${contacts.length}):*\n\n${list}${more}\n\n` +
+          `📊 Batas: maks *${BROADCAST_LIMITS.MAX_PER_BLAST}* per blast, *${BROADCAST_LIMITS.DAILY_MAX}* per hari`
+      });
+    }
+
+    case 'badd':
+    case 'broadcastadd': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}badd [nomor] [label opsional]\n\nContoh: ${config.prefix}badd 628123456789 Pelanggan A`
+      });
+      const number = args[0];
+      const label = args.slice(1).join(' ');
+      const result = addContact(number, label);
+      if (!result) return sock.sendMessage(jid, { text: '❌ Nomor tidak valid! Gunakan format 628xxx.' });
+      return sock.sendMessage(jid, {
+        text: `✅ Kontak *${result}* berhasil ditambahkan ke daftar broadcast.\n📋 Total: ${getContactCount()} kontak`
+      });
+    }
+
+    case 'baddmany':
+    case 'broadcastaddmany': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}baddmany [nomor1, nomor2, ...]\n\nContoh:\n${config.prefix}baddmany 628111, 628222, 628333`
+      });
+      const text = args.join(' ');
+      const { added, failed, total } = addContactsBulk(text);
+      return sock.sendMessage(jid, {
+        text: `✅ *Import selesai!*\n\n` +
+          `✔️ Berhasil: ${added}\n` +
+          `❌ Gagal: ${failed}\n` +
+          `📊 Total kontak sekarang: ${getContactCount()}`
+      });
+    }
+
+    case 'bremove':
+    case 'broadcastremove': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}bremove [nomor]`
+      });
+      const removed = removeContact(args[0]);
+      if (!removed) return sock.sendMessage(jid, { text: `❌ Nomor ${args[0]} tidak ada di daftar.` });
+      return sock.sendMessage(jid, {
+        text: `🗑️ Nomor ${args[0]} dihapus dari daftar broadcast.\n📋 Sisa: ${getContactCount()} kontak`
+      });
+    }
+
+    case 'bclear':
+    case 'broadcastclear': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (args[0] !== 'confirm') {
+        return sock.sendMessage(jid, {
+          text: `⚠️ Ini akan menghapus SEMUA ${getContactCount()} kontak broadcast!\n\nKetik *${config.prefix}bclear confirm* untuk konfirmasi.`
+        });
+      }
+      clearAllContacts();
+      return sock.sendMessage(jid, { text: '🗑️ Semua kontak broadcast berhasil dihapus.' });
+    }
+
+    case 'blast':
+    case 'broadcast': {
+      if (!isOwner) return sock.sendMessage(jid, { text: '❌ Command ini hanya untuk owner!' });
+      if (!args.length) return sock.sendMessage(jid, {
+        text: `❌ Format: ${config.prefix}blast [pesan]\n\nContoh:\n${config.prefix}blast Halo! Ada promo spesial hari ini 🎉`
+      });
+
+      if (isBroadcastActive()) {
+        return sock.sendMessage(jid, { text: '⏳ Broadcast sedang berjalan! Tunggu selesai dulu.' });
+      }
+
+      const totalContacts = getContactCount();
+      if (totalContacts === 0) {
+        return sock.sendMessage(jid, {
+          text: `❌ Daftar kontak kosong! Tambah dulu dengan ${config.prefix}badd`
+        });
+      }
+
+      const blastMessage = args.join(' ');
+      const willSend = Math.min(totalContacts, BROADCAST_LIMITS.MAX_PER_BLAST);
+
+      // Konfirmasi dulu
+      if (args[0] !== 'go' || args.length < 2) {
+        return sock.sendMessage(jid, {
+          text: `📢 *Konfirmasi Broadcast*\n\n` +
+            `📋 Penerima: *${willSend}* dari ${totalContacts} kontak\n` +
+            `⏱️ Estimasi: ~${Math.ceil(willSend * BROADCAST_LIMITS.INTERVAL_MS / 1000 / 60)} menit\n` +
+            `⚠️ Interval: ${BROADCAST_LIMITS.INTERVAL_MS / 1000} detik/pesan\n\n` +
+            `📝 *Pesan:*\n${blastMessage}\n\n` +
+            `Ketik:\n*${config.prefix}blast go ${blastMessage}*\n\nuntuk mulai kirim.`
+        });
+      }
+
+      // blast go [pesan]
+      const finalMessage = args.slice(1).join(' ');
+      if (!finalMessage) return sock.sendMessage(jid, { text: '❌ Pesan tidak boleh kosong!' });
+
+      await sock.sendMessage(jid, {
+        text: `📢 *Broadcast dimulai!*\n⏱️ Mengirim ke ${willSend} kontak dengan interval ${BROADCAST_LIMITS.INTERVAL_MS / 1000}s...\n\nKamu akan dapat laporan setelah selesai.`
+      });
+
+      // Jalankan broadcast di background
+      runBroadcast(sock, finalMessage).then(result => {
+        if (result.success) {
+          const failedInfo = result.failed > 0
+            ? `\n❌ Gagal: ${result.failed} nomor (${result.failedNumbers.slice(0, 5).join(', ')}${result.failed > 5 ? '...' : ''})`
+            : '';
+          sock.sendMessage(jid, {
+            text: `✅ *Broadcast selesai!*\n\n` +
+              `✔️ Terkirim: ${result.sent}\n` +
+              `📊 Total target: ${result.total}` +
+              failedInfo + '\n\n' +
+              `📅 Sisa kuota hari ini: ${result.dailyRemaining} pesan`
+          });
+        } else {
+          sock.sendMessage(jid, { text: `❌ Broadcast gagal: ${result.reason}` });
+        }
+      }).catch(err => {
+        sock.sendMessage(jid, { text: `❌ Error saat broadcast: ${err.message}` });
+      });
+
+      return;
+    }
+
     case 'default':
       return sock.sendMessage(jid, {
         text: `❓ Command *${config.prefix}default* tidak dikenal.\nKetik *${config.prefix}help* untuk daftar command.`
@@ -353,7 +496,14 @@ async function sendHelp(sock, jid, isAdmin, isOwner) {
     text += `  ${config.prefix}reset-session 628xxx — Reset sesi user ke NEW\n`;
     text += `  ${config.prefix}aiinfo — Info status AI router & Hermes\n`;
     text += `  ${config.prefix}hermes [pesan] — Force kirim ke Hermes Agent\n`;
-    text += `\n📚 *Skills Management:*\n`;
+    text += `\n📢 *Broadcast:*\n`;
+    text += `  ${config.prefix}blist — Daftar kontak broadcast\n`;
+    text += `  ${config.prefix}badd [nomor] [label] — Tambah kontak\n`;
+    text += `  ${config.prefix}baddmany [n1, n2, ...] — Import banyak nomor\n`;
+    text += `  ${config.prefix}bremove [nomor] — Hapus kontak\n`;
+    text += `  ${config.prefix}bclear confirm — Hapus semua kontak\n`;
+    text += `  ${config.prefix}blast [pesan] — Preview blast\n`;
+    text += `  ${config.prefix}blast go [pesan] — Kirim blast\n`;
     text += `  ${config.prefix}listskills — Daftar semua skill\n`;
     text += `  ${config.prefix}addskill [nama] | [konten] — Tambah/update skill\n`;
     text += `  ${config.prefix}viewskill [nama] — Lihat isi skill\n`;
