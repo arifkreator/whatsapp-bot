@@ -222,3 +222,39 @@ export function getQuotaStatus() {
     currentKey: currentKeyIndex + 1,
   };
 }
+
+// =============================================
+// EXPORTED: untuk fileAnalyzer
+// Panggil Groq dengan fallback antar key
+// =============================================
+export async function callGroqWithFallback(messages, modelOverride = null) {
+  if (apiKeys.length === 0) throw new Error('Tidak ada GROQ_API_KEY yang dikonfigurasi');
+
+  const activeKey = getActiveKey();
+  if (!activeKey) throw new Error('Semua API key sedang rate-limited');
+
+  const response = await fetch(GROQ_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${activeKey}`,
+    },
+    body: JSON.stringify({
+      model: modelOverride || config.groqModel,
+      messages,
+      max_tokens: config.aiMaxTokens,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    const error = new Error(err?.error?.message || `HTTP ${response.status}`);
+    error.status = response.status;
+    if (response.status === 429) markKeyExhausted(activeKey);
+    throw error;
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || '(tidak ada respons)';
+}

@@ -2,6 +2,7 @@ import config, { isOwnerNumber } from '../config.js';
 import { checkSpam } from '../services/spamDetector.js';
 import { askAI } from '../services/aiRouter.js';
 import { handleCommand } from './commandHandler.js';
+import { analyzeFile, isSupportedFile, getFileCategory } from '../services/fileAnalyzer.js';
 import {
   getState, startSession, startLiveChat, stopSession,
   resetSession, refreshTimer, isBotActive, isLiveChat,
@@ -73,11 +74,44 @@ async function processMessage(sock, msg) {
   if (msgTypes.every(t => ignoredTypes.includes(t))) return;
 
   const body = extractMessageText(msg);
+
+  // ── Deteksi file/media yang dikirim ──────────────────────────────
+  const hasMedia = msgTypes.some(t =>
+    ['imageMessage', 'documentMessage', 'audioMessage'].includes(t)
+  );
+  const mediaMsg = msg.message?.imageMessage ||
+                   msg.message?.documentMessage;
+  const mediaMimetype = mediaMsg?.mimetype || '';
+  const isAnalyzableFile = hasMedia && isSupportedFile(mediaMimetype);
+
+  // Handle file analisis — caption sebagai pertanyaan (opsional)
+  if (isAnalyzableFile) {
+    const question = mediaMsg?.caption?.trim() || '';
+    const fileCategory = getFileCategory(mediaMimetype);
+    const filename = mediaMsg?.fileName || mediaMsg?.title || 'file';
+
+    logger.info(`📎 File diterima: ${filename} (${fileCategory}) dari ${senderId}`);
+
+    await sock.sendPresenceUpdate('composing', jid);
+    try {
+      const analysis = await analyzeFile(sock, msg, question);
+      await sock.sendPresenceUpdate('paused', jid);
+      return sock.sendMessage(jid, {
+        text: `📎 *Analisis File:* _${filename}_\n\n${analysis}`
+      }, { quoted: msg });
+    } catch (err) {
+      await sock.sendPresenceUpdate('paused', jid);
+      logger.error(`❌ File analysis error: ${err.message}`);
+      return sock.sendMessage(jid, {
+        text: '❌ Gagal menganalisis file. Coba lagi.'
+      }, { quoted: msg });
+    }
+  }
+
   if (!body || body.trim().length === 0) return;
 
   const senderId = senderNumber || senderJid?.split('@')[0] || '';
   const isOwner = isOwnerNumber(senderId);
-  logger.info(`🔍 DEBUG isOwner: senderId="${senderId}" isOwner=${isOwner}`);
 
   logger.info(`📨 [${isGroup ? 'GROUP' : 'PRIVATE'}] ${senderId}: "${body.substring(0, 80)}"`);
 
