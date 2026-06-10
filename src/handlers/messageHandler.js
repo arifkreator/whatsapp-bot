@@ -54,6 +54,10 @@ async function processMessage(sock, msg) {
   const botJid = await getBotJid(sock);
   const botNumber = botJid?.split('@')[0]?.split(':')[0];
   const jid = msg.key.remoteJid;
+
+  // ✅ FIX: Filter status broadcast WhatsApp
+  if (!jid || jid === 'status@broadcast') return;
+
   const isGroup = jid.endsWith('@g.us');
 
   if (msg.key.fromMe === true) return;
@@ -67,13 +71,17 @@ async function processMessage(sock, msg) {
 
   const msgTypes = Object.keys(msg.message);
   const ignoredTypes = [
-    'reactionMessage','protocolMessage','senderKeyDistributionMessage',
-    'messageContextInfo','statusMentionMessage','pollCreationMessage',
-    'pollUpdateMessage','keepInChatMessage',
+    'reactionMessage', 'protocolMessage', 'senderKeyDistributionMessage',
+    'messageContextInfo', 'statusMentionMessage', 'pollCreationMessage',
+    'pollUpdateMessage', 'keepInChatMessage',
   ];
   if (msgTypes.every(t => ignoredTypes.includes(t))) return;
 
   const body = extractMessageText(msg);
+
+  // ✅ FIX: Deklarasikan senderId & isOwner lebih awal (sebelum dipakai di blok file)
+  const senderId = senderNumber || senderJid?.split('@')[0] || '';
+  const isOwner = isOwnerNumber(senderId);
 
   // ── Deteksi file/media yang dikirim ──────────────────────────────
   const hasMedia = msgTypes.some(t =>
@@ -110,9 +118,6 @@ async function processMessage(sock, msg) {
 
   if (!body || body.trim().length === 0) return;
 
-  const senderId = senderNumber || senderJid?.split('@')[0] || '';
-  const isOwner = isOwnerNumber(senderId);
-
   logger.info(`📨 [${isGroup ? 'GROUP' : 'PRIVATE'}] ${senderId}: "${body.substring(0, 80)}"`);
 
   // ── GRUP — tidak butuh state management ──────────────────────────
@@ -127,7 +132,7 @@ async function processMessage(sock, msg) {
     if (body.startsWith(config.prefix)) {
       const [cmd, ...args] = body.slice(config.prefix.length).trim().split(/\s+/);
       const groupMetadata = await sock.groupMetadata(jid).catch(() => null);
-      const isAdmin = isGroup ? isGroupAdmin(groupMetadata, senderJid, botJid) : false;
+      const isAdmin = isGroupAdmin(groupMetadata, senderJid, botJid);
       await handleCommand(sock, msg, cmd, args, true, isAdmin, isOwner);
       return;
     }
@@ -172,7 +177,7 @@ async function processMessage(sock, msg) {
   // Handle /start
   if (bodyLower === '/start') {
     startSession(senderId);
-    greetedUsers.delete(senderId); // reset greeting
+    greetedUsers.delete(senderId);
     await sock.sendMessage(jid, {
       text: `🤖 *Mode Bot Aktif!*\n\nHalo! Aku siap membantu kamu.\n\nKirim pesan apapun dan aku akan membalas.\nSesi aktif selama 24 jam sejak pesan terakhir.\n\n_Ketik */stop* untuk menghentikan bot._`,
     }, { quoted: msg });
@@ -206,10 +211,8 @@ async function processMessage(sock, msg) {
 
   // ── STATE: NEW ────────────────────────────────────────────────────
   if (state === 'NEW') {
-    // Kirim perkenalan hanya sekali per "sesi baru"
     if (!greetedUsers.has(senderId)) {
       greetedUsers.add(senderId);
-      // Hapus greeting setelah 1 jam agar bisa greet lagi kalau balik
       setTimeout(() => greetedUsers.delete(senderId), 60 * 60 * 1000);
       await sock.sendMessage(jid, {
         text: getWelcomeMessage(config.botName),
@@ -220,33 +223,25 @@ async function processMessage(sock, msg) {
 
   // ── STATE: STOPPED ────────────────────────────────────────────────
   if (state === 'STOPPED') {
-    // Bot diam total — tidak balas apapun
-    // Tapi kalau user chat lagi setelah STOPPED expired (24 jam)
-    // state sudah jadi NEW karena TTL
     return;
   }
 
   // ── STATE: LIVECHAT ───────────────────────────────────────────────
   if (state === 'LIVECHAT') {
-    // Bot diam — reset timer 24 jam setiap ada pesan
     refreshTimer(senderId);
-    // Tidak balas apapun — kamu yang balas manual
     return;
   }
 
   // ── STATE: BOT_ACTIVE ─────────────────────────────────────────────
   if (state === 'BOT_ACTIVE') {
-    // Reset timer 24 jam setiap ada pesan
     refreshTimer(senderId);
 
-    // Command handler
     if (body.startsWith(config.prefix)) {
       const [cmd, ...args] = body.slice(config.prefix.length).trim().split(/\s+/);
       await handleCommand(sock, msg, cmd, args, false, false, false);
       return;
     }
 
-    // AI reply
     if (config.aiAutoReplyPrivate) {
       await sock.sendPresenceUpdate('composing', jid);
       const reply = await askAI(senderJid, body, { senderName: senderId });
