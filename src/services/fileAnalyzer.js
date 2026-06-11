@@ -117,33 +117,24 @@ function extractFromText(buffer) {
 }
 
 // =============================================
-// OPENROUTER CLIENT — untuk semua analisis file
-// Pakai model vision & text terbaik yang gratis
+// GOOGLE AI STUDIO CLIENT (Gemini)
+// Gratis, support vision, context window besar
+// Daftar di: https://aistudio.google.com
 // =============================================
 
-const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
 
-// Model untuk dokumen teks (PDF, Excel, Word, TXT)
-const OPENROUTER_TEXT_MODEL   = 'qwen/qwen2.5-vl-72b-instruct:free';
-// Model untuk gambar (support vision) — dengan fallback
-const OPENROUTER_VISION_MODELS = [
-  'google/gemma-4-31b-it:free',
-  'qwen/qwen2.5-vl-72b-instruct:free',
-  'meta-llama/llama-3.2-11b-vision-instruct:free',
-];
+// Model Gemini — support vision + dokumen
+const GEMINI_VISION_MODEL = 'gemini-2.0-flash';
+const GEMINI_TEXT_MODEL   = 'gemini-2.0-flash';
 
-async function callOpenRouter(messages, model) {
-  const apiKey = process.env.OPENROUTER_API_KEY || '';
-  if (!apiKey) throw new Error('OPENROUTER_API_KEY belum diset!');
+async function callGemini(messages, model) {
+  const apiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
+  if (!apiKey) throw new Error('GOOGLE_API_KEY belum diset! Daftar di https://aistudio.google.com');
 
-  const response = await fetch(OPENROUTER_API_URL, {
+  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-      'HTTP-Referer': 'https://whatsapp-bot.railway.app',
-      'X-Title': 'WhatsApp Bot File Analyzer',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model,
       messages,
@@ -154,7 +145,7 @@ async function callOpenRouter(messages, model) {
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `OpenRouter HTTP ${response.status}`);
+    throw new Error(err?.error?.message || `Gemini HTTP ${response.status}`);
   }
 
   const data = await response.json();
@@ -164,7 +155,7 @@ async function callOpenRouter(messages, model) {
 // =============================================
 // ANALISIS DOKUMEN (PDF, Excel, Word, TXT)
 // =============================================
-async function analyzeDocumentWithOpenRouter(content, question, fileType, filename) {
+async function analyzeDocumentWithGemini(content, question, fileType, filename) {
   const { getSystemPrompt } = await import('./configManager.js');
   const { buildSkillsContext } = await import('./skillsManager.js');
 
@@ -184,20 +175,19 @@ async function analyzeDocumentWithOpenRouter(content, question, fileType, filena
     { role: 'user', content: userPrompt },
   ];
 
-  logger.info(`🤖 OpenRouter analisis dokumen: ${filename} (${OPENROUTER_TEXT_MODEL})`);
-  return await callOpenRouter(messages, OPENROUTER_TEXT_MODEL);
+  logger.info(`🤖 Gemini analisis dokumen: ${filename}`);
+  return await callGemini(messages, GEMINI_TEXT_MODEL);
 }
 
 // =============================================
-// ANALISIS GAMBAR (Vision) dengan fallback
+// ANALISIS GAMBAR (Vision)
 // =============================================
-async function analyzeImageWithOpenRouter(buffer, mimetype, question, filename) {
+async function analyzeImageWithGemini(buffer, mimetype, question, filename) {
   const { getSystemPrompt } = await import('./configManager.js');
   const { buildSkillsContext } = await import('./skillsManager.js');
 
   const systemPrompt = getSystemPrompt() + buildSkillsContext();
   const base64 = buffer.toString('base64');
-  const imageUrl = `data:${mimetype};base64,${base64}`;
   const userPrompt = question || 'Jelaskan apa yang ada di gambar ini secara detail dalam Bahasa Indonesia.';
 
   const messages = [
@@ -205,25 +195,17 @@ async function analyzeImageWithOpenRouter(buffer, mimetype, question, filename) 
     {
       role: 'user',
       content: [
-        { type: 'image_url', image_url: { url: imageUrl } },
+        {
+          type: 'image_url',
+          image_url: { url: `data:${mimetype};base64,${base64}` },
+        },
         { type: 'text', text: userPrompt },
       ],
     },
   ];
 
-  // Coba satu per satu model vision sampai berhasil
-  let lastError = null;
-  for (const model of OPENROUTER_VISION_MODELS) {
-    try {
-      logger.info(`🤖 OpenRouter vision: ${model}`);
-      return await callOpenRouter(messages, model);
-    } catch (err) {
-      logger.warn(`⚠️ Model ${model} gagal: ${err.message} — coba model berikutnya`);
-      lastError = err;
-    }
-  }
-
-  throw lastError || new Error('Semua vision model gagal');
+  logger.info(`🤖 Gemini analisis gambar: ${filename}`);
+  return await callGemini(messages, GEMINI_VISION_MODEL);
 }
 
 // =============================================
@@ -248,12 +230,12 @@ export async function analyzeFile(sock, msg, question = '') {
   logger.info(`📎 Analisis file: ${filename} (${category}, ${(filesize / 1024).toFixed(0)}KB)`);
 
   try {
-    // Gambar — pakai vision model OpenRouter
+    // Gambar — pakai Gemini Vision
     if (category === 'image') {
-      return await analyzeImageWithOpenRouter(buffer, mimetype, question, filename);
+      return await analyzeImageWithGemini(buffer, mimetype, question, filename);
     }
 
-    // Dokumen — extract teks dulu lalu analisis OpenRouter
+    // Dokumen — extract teks dulu lalu analisis Gemini
     let text = null;
     if (category === 'pdf')              text = await extractFromPDF(buffer);
     else if (category === 'spreadsheet') text = await extractFromExcel(buffer);
@@ -264,13 +246,12 @@ export async function analyzeFile(sock, msg, question = '') {
       return `❌ Tidak bisa membaca isi file *${filename}*.\nFile mungkin kosong, terenkripsi, atau formatnya tidak didukung.`;
     }
 
-    return await analyzeDocumentWithOpenRouter(text, question, category, filename);
+    return await analyzeDocumentWithGemini(text, question, category, filename);
 
   } catch (err) {
     logger.error(`❌ analyzeFile error: ${err.message}`);
-    // Cek apakah error dari OpenRouter API key
-    if (err.message.includes('OPENROUTER_API_KEY')) {
-      return '❌ OpenRouter API key belum dikonfigurasi. Hubungi admin.';
+    if (err.message.includes('GOOGLE_API_KEY')) {
+      return '❌ Google API key belum dikonfigurasi. Set GOOGLE_API_KEY di Railway.';
     }
     return `❌ Terjadi error saat menganalisis file: ${err.message}`;
   }
