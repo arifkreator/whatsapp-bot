@@ -124,9 +124,13 @@ function extractFromText(buffer) {
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 // Model untuk dokumen teks (PDF, Excel, Word, TXT)
-const OPENROUTER_TEXT_MODEL  = 'google/gemini-2.0-flash-exp:free';
-// Model untuk gambar (support vision)
-const OPENROUTER_VISION_MODEL = 'google/gemini-2.0-flash-exp:free';
+const OPENROUTER_TEXT_MODEL   = 'qwen/qwen2.5-vl-72b-instruct:free';
+// Model untuk gambar (support vision) — dengan fallback
+const OPENROUTER_VISION_MODELS = [
+  'google/gemma-4-31b-it:free',
+  'qwen/qwen2.5-vl-72b-instruct:free',
+  'meta-llama/llama-3.2-11b-vision-instruct:free',
+];
 
 async function callOpenRouter(messages, model) {
   const apiKey = process.env.OPENROUTER_API_KEY || '';
@@ -185,7 +189,7 @@ async function analyzeDocumentWithOpenRouter(content, question, fileType, filena
 }
 
 // =============================================
-// ANALISIS GAMBAR (Vision)
+// ANALISIS GAMBAR (Vision) dengan fallback
 // =============================================
 async function analyzeImageWithOpenRouter(buffer, mimetype, question, filename) {
   const { getSystemPrompt } = await import('./configManager.js');
@@ -207,8 +211,19 @@ async function analyzeImageWithOpenRouter(buffer, mimetype, question, filename) 
     },
   ];
 
-  logger.info(`🤖 OpenRouter analisis gambar: ${filename} (${OPENROUTER_VISION_MODEL})`);
-  return await callOpenRouter(messages, OPENROUTER_VISION_MODEL);
+  // Coba satu per satu model vision sampai berhasil
+  let lastError = null;
+  for (const model of OPENROUTER_VISION_MODELS) {
+    try {
+      logger.info(`🤖 OpenRouter vision: ${model}`);
+      return await callOpenRouter(messages, model);
+    } catch (err) {
+      logger.warn(`⚠️ Model ${model} gagal: ${err.message} — coba model berikutnya`);
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error('Semua vision model gagal');
 }
 
 // =============================================
