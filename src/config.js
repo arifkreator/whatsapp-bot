@@ -55,6 +55,9 @@ export const config = {
   hermesMaxTokens: parseInt(process.env.HERMES_MAX_TOKENS) || 2048,
   hermesSystemPrompt: process.env.HERMES_SYSTEM_PROMPT || '',
 
+  // OpenRouter (untuk file analysis)
+  openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
+
   // Anti-spam
   spamMaxMessages: parseInt(process.env.SPAM_MAX_MESSAGES) || 5,
   spamTimeWindow: parseInt(process.env.SPAM_TIME_WINDOW) || 10,

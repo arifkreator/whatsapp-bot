@@ -117,16 +117,57 @@ function extractFromText(buffer) {
 }
 
 // =============================================
-// ANALISIS FILE VIA GROQ
+// OPENROUTER CLIENT — untuk semua analisis file
+// Pakai model vision & text terbaik yang gratis
 // =============================================
-async function analyzeWithGroq(content, question, fileType, filename) {
+
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+// Model untuk dokumen teks (PDF, Excel, Word, TXT)
+const OPENROUTER_TEXT_MODEL  = 'google/gemini-2.0-flash-exp:free';
+// Model untuk gambar (support vision)
+const OPENROUTER_VISION_MODEL = 'google/gemini-2.0-flash-exp:free';
+
+async function callOpenRouter(messages, model) {
+  const apiKey = process.env.OPENROUTER_API_KEY || '';
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY belum diset!');
+
+  const response = await fetch(OPENROUTER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://whatsapp-bot.railway.app',
+      'X-Title': 'WhatsApp Bot File Analyzer',
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens: 2048,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `OpenRouter HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || '(tidak ada respons)';
+}
+
+// =============================================
+// ANALISIS DOKUMEN (PDF, Excel, Word, TXT)
+// =============================================
+async function analyzeDocumentWithOpenRouter(content, question, fileType, filename) {
   const { getSystemPrompt } = await import('./configManager.js');
   const { buildSkillsContext } = await import('./skillsManager.js');
 
   const systemPrompt = getSystemPrompt() + buildSkillsContext();
 
   const defaultQuestion = {
-    pdf:         'Ringkas isi dokumen ini secara singkat.',
+    pdf:         'Ringkas isi dokumen ini secara singkat dan jelas.',
     spreadsheet: 'Analisis data di spreadsheet ini. Jelaskan isi, pola, dan insight penting.',
     word:        'Ringkas isi dokumen Word ini secara singkat.',
     text:        'Analisis dan ringkas teks ini.',
@@ -139,23 +180,21 @@ async function analyzeWithGroq(content, question, fileType, filename) {
     { role: 'user', content: userPrompt },
   ];
 
-  // Coba semua Groq key (pakai logika dari groqAI)
-  const { callGroqWithFallback } = await import('./groqAI.js');
-  return await callGroqWithFallback(messages);
+  logger.info(`🤖 OpenRouter analisis dokumen: ${filename} (${OPENROUTER_TEXT_MODEL})`);
+  return await callOpenRouter(messages, OPENROUTER_TEXT_MODEL);
 }
 
 // =============================================
-// ANALISIS GAMBAR VIA GROQ VISION
+// ANALISIS GAMBAR (Vision)
 // =============================================
-async function analyzeImageWithGroq(buffer, mimetype, question, filename) {
+async function analyzeImageWithOpenRouter(buffer, mimetype, question, filename) {
   const { getSystemPrompt } = await import('./configManager.js');
   const { buildSkillsContext } = await import('./skillsManager.js');
 
   const systemPrompt = getSystemPrompt() + buildSkillsContext();
   const base64 = buffer.toString('base64');
   const imageUrl = `data:${mimetype};base64,${base64}`;
-
-  const userPrompt = question || 'Jelaskan apa yang ada di gambar ini secara detail.';
+  const userPrompt = question || 'Jelaskan apa yang ada di gambar ini secara detail dalam Bahasa Indonesia.';
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -168,9 +207,8 @@ async function analyzeImageWithGroq(buffer, mimetype, question, filename) {
     },
   ];
 
-  // Gunakan model vision Groq
-  const { callGroqWithFallback } = await import('./groqAI.js');
-  return await callGroqWithFallback(messages, 'meta-llama/llama-4-scout-17b-16e-instruct');
+  logger.info(`🤖 OpenRouter analisis gambar: ${filename} (${OPENROUTER_VISION_MODEL})`);
+  return await callOpenRouter(messages, OPENROUTER_VISION_MODEL);
 }
 
 // =============================================
@@ -195,26 +233,30 @@ export async function analyzeFile(sock, msg, question = '') {
   logger.info(`📎 Analisis file: ${filename} (${category}, ${(filesize / 1024).toFixed(0)}KB)`);
 
   try {
-    // Gambar — pakai vision model
+    // Gambar — pakai vision model OpenRouter
     if (category === 'image') {
-      return await analyzeImageWithGroq(buffer, mimetype, question, filename);
+      return await analyzeImageWithOpenRouter(buffer, mimetype, question, filename);
     }
 
-    // Dokumen — extract teks dulu
+    // Dokumen — extract teks dulu lalu analisis OpenRouter
     let text = null;
-    if (category === 'pdf')         text = await extractFromPDF(buffer);
+    if (category === 'pdf')              text = await extractFromPDF(buffer);
     else if (category === 'spreadsheet') text = await extractFromExcel(buffer);
-    else if (category === 'word')    text = await extractFromWord(buffer);
-    else if (category === 'text')    text = extractFromText(buffer);
+    else if (category === 'word')        text = await extractFromWord(buffer);
+    else if (category === 'text')        text = extractFromText(buffer);
 
     if (!text || text.trim().length === 0) {
       return `❌ Tidak bisa membaca isi file *${filename}*.\nFile mungkin kosong, terenkripsi, atau formatnya tidak didukung.`;
     }
 
-    return await analyzeWithGroq(text, question, category, filename);
+    return await analyzeDocumentWithOpenRouter(text, question, category, filename);
 
   } catch (err) {
     logger.error(`❌ analyzeFile error: ${err.message}`);
+    // Cek apakah error dari OpenRouter API key
+    if (err.message.includes('OPENROUTER_API_KEY')) {
+      return '❌ OpenRouter API key belum dikonfigurasi. Hubungi admin.';
+    }
     return `❌ Terjadi error saat menganalisis file: ${err.message}`;
   }
 }
