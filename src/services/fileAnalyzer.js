@@ -24,12 +24,26 @@ export const SUPPORTED_TYPES = {
     'application/msword',                                                 // doc
     'text/plain',
     'text/csv',
+    'text/markdown',
+    'text/x-markdown',
+    'application/json',
+    'text/javascript',
+    'text/x-python',
+    'text/html',
+    'text/xml',
   ],
 };
 
-export function isSupportedFile(mimetype) {
+export function isSupportedFile(mimetype, filename = '') {
   const all = [...SUPPORTED_TYPES.image, ...SUPPORTED_TYPES.document];
-  return all.some(t => mimetype?.toLowerCase().includes(t.split('/')[1]));
+  if (all.some(t => mimetype?.toLowerCase().includes(t.split('/')[1]))) return true;
+
+  // Fallback: cek ekstensi filename jika mimetype tidak dikenal
+  const ext = filename?.split('.').pop()?.toLowerCase();
+  const supportedExts = ['jpg', 'jpeg', 'png', 'webp', 'gif',
+    'pdf', 'docx', 'doc', 'xlsx', 'xls', 'csv',
+    'txt', 'md', 'json', 'js', 'py', 'html', 'xml'];
+  return supportedExts.includes(ext);
 }
 
 export function getFileCategory(mimetype) {
@@ -122,9 +136,6 @@ function extractFromText(buffer) {
 // Daftar di: https://aistudio.google.com
 // =============================================
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-
-// Model Gemini — support vision + dokumen
 const GEMINI_VISION_MODEL = 'gemini-2.0-flash';
 const GEMINI_TEXT_MODEL   = 'gemini-2.0-flash';
 
@@ -132,24 +143,74 @@ async function callGemini(messages, model) {
   const apiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
   if (!apiKey) throw new Error('GOOGLE_API_KEY belum diset! Daftar di https://aistudio.google.com');
 
-  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+  // Gunakan Gemini native API (bukan OpenAI-compatible) karena lebih stabil untuk vision
+  const GEMINI_NATIVE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  // Convert OpenAI message format ke Gemini format
+  const contents = [];
+  let systemInstruction = null;
+
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      systemInstruction = { parts: [{ text: msg.content }] };
+      continue;
+    }
+
+    const role = msg.role === 'assistant' ? 'model' : 'user';
+
+    // Handle content array (gambar + teks)
+    if (Array.isArray(msg.content)) {
+      const parts = [];
+      for (const item of msg.content) {
+        if (item.type === 'text') {
+          parts.push({ text: item.text });
+        } else if (item.type === 'image_url') {
+          // Extract base64 dari data URL
+          const dataUrl = item.image_url?.url || '';
+          const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            parts.push({
+              inline_data: {
+                mime_type: match[1],
+                data: match[2],
+              }
+            });
+          }
+        }
+      }
+      contents.push({ role, parts });
+    } else {
+      // Plain text
+      contents.push({ role, parts: [{ text: msg.content }] });
+    }
+  }
+
+  const body = {
+    contents,
+    generationConfig: {
+      maxOutputTokens: 2048,
+      temperature: 0.7,
+    },
+  };
+
+  if (systemInstruction) {
+    body.systemInstruction = systemInstruction;
+  }
+
+  const response = await fetch(GEMINI_NATIVE_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: 2048,
-      temperature: 0.7,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Gemini HTTP ${response.status}`);
+    const errMsg = err?.error?.message || `Gemini HTTP ${response.status}`;
+    throw new Error(errMsg);
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content || '(tidak ada respons)';
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '(tidak ada respons)';
 }
 
 // =============================================

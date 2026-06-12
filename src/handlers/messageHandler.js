@@ -89,7 +89,8 @@ async function processMessage(sock, msg) {
   const mediaMsg = msg.message?.imageMessage ||
                    msg.message?.documentMessage;
   const mediaMimetype = mediaMsg?.mimetype || '';
-  const isAnalyzableFile = hasMedia && isSupportedFile(mediaMimetype);
+  const mediaFilename = mediaMsg?.fileName || mediaMsg?.title || '';
+  const isAnalyzableFile = hasMedia && isSupportedFile(mediaMimetype, mediaFilename);
 
   // Handle file analisis — caption sebagai pertanyaan (opsional)
   if (isAnalyzableFile) {
