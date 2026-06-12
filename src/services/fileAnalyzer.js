@@ -139,11 +139,10 @@ function extractFromText(buffer) {
 const GEMINI_VISION_MODEL = 'gemini-2.0-flash';
 const GEMINI_TEXT_MODEL   = 'gemini-2.0-flash';
 
-async function callGemini(messages, model) {
+async function callGemini(messages, model, retries = 2) {
   const apiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '';
   if (!apiKey) throw new Error('GOOGLE_API_KEY belum diset! Daftar di https://aistudio.google.com');
 
-  // Gunakan Gemini native API (bukan OpenAI-compatible) karena lebih stabil untuk vision
   const GEMINI_NATIVE_URL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   // Convert OpenAI message format ke Gemini format
@@ -206,6 +205,20 @@ async function callGemini(messages, model) {
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
     const errMsg = err?.error?.message || `Gemini HTTP ${response.status}`;
+
+    // Rate limit — coba model lain atau retry
+    if (response.status === 429 && retries > 0) {
+      // Coba model flash-lite yang lebih rendah limit-nya
+      if (model === 'gemini-2.0-flash') {
+        logger.warn(`⚠️ Gemini rate limit — fallback ke gemini-1.5-flash`);
+        return await callGemini(messages, 'gemini-1.5-flash', retries - 1);
+      }
+      // Tunggu 5 detik lalu retry
+      logger.warn(`⚠️ Gemini rate limit — retry dalam 5 detik...`);
+      await new Promise(r => setTimeout(r, 5000));
+      return await callGemini(messages, model, retries - 1);
+    }
+
     throw new Error(errMsg);
   }
 
