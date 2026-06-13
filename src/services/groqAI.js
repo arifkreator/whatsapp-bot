@@ -230,14 +230,14 @@ export function getQuotaStatus() {
 export async function callGroqWithFallback(messages, modelOverride = null) {
   if (apiKeys.length === 0) throw new Error('Tidak ada GROQ_API_KEY yang dikonfigurasi');
 
-  const activeKey = getActiveKey();
-  if (!activeKey) throw new Error('Semua API key sedang rate-limited');
+  const active = getActiveKey();
+  if (!active) throw new Error('Semua API key sedang rate-limited');
 
   const response = await fetch(GROQ_API_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${activeKey}`,
+      'Authorization': `Bearer ${active.key}`,
     },
     body: JSON.stringify({
       model: modelOverride || config.groqModel,
@@ -251,7 +251,7 @@ export async function callGroqWithFallback(messages, modelOverride = null) {
     const err = await response.json().catch(() => ({}));
     const error = new Error(err?.error?.message || `HTTP ${response.status}`);
     error.status = response.status;
-    if (response.status === 429) markKeyExhausted(activeKey);
+    if (response.status === 429) markKeyExhausted(active.key);
     throw error;
   }
 
