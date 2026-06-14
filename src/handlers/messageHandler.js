@@ -93,7 +93,18 @@ async function processMessage(sock, msg) {
   const isAnalyzableFile = hasMedia && isSupportedFile(mediaMimetype, mediaFilename);
 
   // Handle file analisis — caption sebagai pertanyaan (opsional)
-  if (isAnalyzableFile) {
+  // Skip jika user sedang LIVECHAT atau STOPPED (bukan BOT_ACTIVE)
+  if (isAnalyzableFile && !isGroup) {
+    const fileState = getState(senderJid);
+    if (fileState === 'LIVECHAT') {
+      // Livechat — forward file ke admin, jangan analisis AI
+      // (file akan tetap terkirim ke admin via WA langsung)
+      return;
+    }
+    if (fileState === 'STOPPED') {
+      // User stop bot — abaikan
+      return;
+    }
     const question = mediaMsg?.caption?.trim() || '';
     const fileCategory = getFileCategory(mediaMimetype);
     const filename = mediaMsg?.fileName || mediaMsg?.title || 'file';
@@ -113,6 +124,24 @@ async function processMessage(sock, msg) {
       return sock.sendMessage(jid, {
         text: '❌ Gagal menganalisis file. Coba lagi.'
       }, { quoted: msg });
+    }
+  }
+
+  // Handle file di grup — analisis AI selalu aktif di grup
+  if (isAnalyzableFile && isGroup) {
+    const question = mediaMsg?.caption?.trim() || '';
+    const filename = mediaMsg?.fileName || mediaMsg?.title || 'file';
+    logger.info(`📎 File diterima di grup: ${filename} dari ${senderId}`);
+    await sock.sendPresenceUpdate('composing', jid);
+    try {
+      const analysis = await analyzeFile(sock, msg, question);
+      await sock.sendPresenceUpdate('paused', jid);
+      return sock.sendMessage(jid, {
+        text: `📎 *Analisis File:* _${filename}_\n\n${analysis}`
+      }, { quoted: msg });
+    } catch (err) {
+      await sock.sendPresenceUpdate('paused', jid);
+      return;
     }
   }
 
